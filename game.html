@@ -1,0 +1,1511 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>🎮 Natumi no Bouken</title>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+    html, body {
+      width:100%; height:100%; overflow:hidden;
+      background:#05050f;
+      display:flex; align-items:center; justify-content:center;
+    }
+    #root {
+      width: min(100vw, calc(100vh * 9 / 19.5));
+      height: min(100vh, calc(100vw * 19.5 / 9));
+      display: flex; flex-direction: column;
+      overflow: hidden; position: relative;
+    }
+    @keyframes shake {
+      0%,100%{transform:translateX(0)} 20%{transform:translateX(-7px)}
+      40%{transform:translateX(7px)}   60%{transform:translateX(-4px)}
+      80%{transform:translateX(4px)}
+    }
+    @keyframes fade-in  { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:translateY(0)} }
+    @keyframes float    { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-5px)} }
+    @keyframes glow     { 0%,100%{box-shadow:0 0 6px rgba(251,191,36,.3)} 50%{box-shadow:0 0 18px rgba(251,191,36,.7)} }
+    @keyframes star-twinkle { 0%,100%{opacity:.2} 50%{opacity:1} }
+    @keyframes title-glow   { 0%,100%{text-shadow:0 0 10px rgba(251,191,36,.4)} 50%{text-shadow:0 0 24px rgba(251,191,36,.9)} }
+    @keyframes pop-in   { 0%{opacity:0;transform:scale(.8) translateY(10px)} 100%{opacity:1;transform:scale(1) translateY(0)} }
+    @keyframes slide-up { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:translateY(0)} }
+    .log-entry   { animation: fade-in .2s ease; }
+    .enemy-float { animation: float 3s ease-in-out infinite; }
+    .boss-glow   { animation: glow  2s ease-in-out infinite; }
+    .title-glow  { animation: title-glow 2.5s ease-in-out infinite; }
+    .pop-in      { animation: pop-in .35s cubic-bezier(.34,1.56,.64,1) both; }
+    .slide-up    { animation: slide-up .3s ease both; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ================================================================
+// § assets  ─  画像（img フォルダ）
+// ================================================================
+const ICON = { natsumi:"img/natsumi.png", masaya:"img/masaya.png" };
+const BG = {
+  forest:"img/forest.png", cafe:"img/cafe.png", xmas:"img/xmas.png",
+  sendai:"img/sendai.png", french:"img/French.png", fujiq:"img/fujiq.png",
+  office:"img/office.png", hotel:"img/hotel.png", space:"img/space.png",
+  night:"img/night.png", museum:"img/Museum.png", bowling:"img/bowling.png",
+};
+// 敵ごとの戦闘背景
+const ENEMY_BG = {
+  wildBear:BG.forest, hardPuzzle:BG.cafe, christmasTree:BG.xmas, sasikama:BG.sendai,
+  iceCreamCake:BG.xmas, frenchDinner:BG.french, rollercoaster:BG.fujiq,
+  accenture:BG.office, anxiety:BG.space, anxietyFinal:BG.space,
+};
+
+// キャラアイコン（読み込み失敗時は絵文字にフォールバック・React安全）
+function Avatar({ who, size = 24, radius, border, glow, gray, style }) {
+  const [err, setErr] = useState(false);
+  const emoji = who === "masaya" ? "👨" : "👩";
+  const rad = radius != null ? radius : Math.round(size * 0.24);
+  if (err) {
+    return <span style={{ fontSize: Math.round(size * 0.82), lineHeight:1, display:"inline-flex", alignItems:"center", justifyContent:"center", width:size, height:size, ...style }}>{emoji}</span>;
+  }
+  return (
+    <img src={ICON[who]} alt={who} onError={() => setErr(true)}
+      style={{ width:size, height:size, borderRadius:rad, objectFit:"cover", border:border, boxShadow:glow, filter: gray ? "grayscale(1)" : "none", flexShrink:0, display:"block", ...style }} />
+  );
+}
+
+// ================================================================
+// § gameData  ─  キャラクター・スキル・アイテム・敵・シナリオ
+// ================================================================
+
+const PLAYER_INITIAL = {
+  name:"Natsumi", level:19,
+  maxHp:420, hp:420, maxMp:180, mp:180,
+  attack:48, defense:32, speed:65, exp:0, bond:10,
+  stats:{ charm:85, power:25, wisdom:80 },
+};
+const PARTNER_INITIAL = {
+  name:"Masaya", level:23,
+  maxHp:380, hp:380, maxMp:80, mp:80,
+  attack:72, defense:48, speed:80, ko:false, bond:10,
+  stats:{ charm:80, power:85, wisdom:50 },
+};
+
+// 初期スキル: smile / hug。他はイベント・レベルアップで習得
+const SKILLS_DATA = [
+  { id:"smile",    name:"スマイル",          emoji:"✨", mpCost:15, type:"attack",   powerMultiplier:1.6, description:"魅力で敵を魅了する" },
+  { id:"inspire",  name:"インスピレーション", emoji:"💡", mpCost:28, type:"attack",   powerMultiplier:2.4, description:"賢さで強力な一撃！" },
+  { id:"hug",      name:"ハグ",              emoji:"💕", mpCost:10, type:"heal",     healAmount:80,       description:"HPを80回復（対象を選ぶ）" },
+  { id:"teamwork", name:"コンビネーション",   emoji:"💞", mpCost:40, type:"attack",   powerMultiplier:3.0, description:"Masayaとの連携攻撃！", partnered:true },
+  { id:"yell",     name:"エール",            emoji:"💖", mpCost:20, type:"heal_both", healAmount:50,      description:"二人のHPを50ずつ回復" },
+];
+const NATSUMI_INITIAL_SKILLS = ["smile", "hug"];
+// 初期スキル: cover / smash。他はイベント・レベルアップで習得
+const MASAYA_SKILLS_DATA = [
+  { id:"cover", name:"庇う",   emoji:"🛡️", mpCost:10, type:"cover",  description:"Natsumiへの攻撃を代わりに受ける" },
+  { id:"smash", name:"強打",   emoji:"💥", mpCost:15, type:"attack", powerMultiplier:1.8, description:"強力な一撃！" },
+  { id:"cheer", name:"激励",   emoji:"📣", mpCost:20, type:"boost",  description:"Natsumiの次の攻撃力＋50%" },
+  { id:"break", name:"ブレイク", emoji:"🔥", mpCost:25, type:"break",  powerMultiplier:2.0, description:"防御を無視した強烈な一撃！" },
+];
+const MASAYA_INITIAL_SKILLS = ["cover", "smash"];
+const ITEMS_DATA = [
+  { id:"potion",     name:"ポーション",     emoji:"🧪", count:3, healAmount:100, mpRestore:0,  description:"HPを100回復" },
+  { id:"elixir",     name:"エーテル",       emoji:"💎", count:2, healAmount:0,   mpRestore:60, description:"MPを60回復" },
+  { id:"megaPotion", name:"メガポーション", emoji:"💊", count:1, healAmount:250, mpRestore:0,  description:"HPを250回復" },
+];
+const ENEMIES_DATA = {
+  wildBear:      { id:"wildBear",      name:"野生のネコ",            emoji:"🐱",  maxHp:260, attack:44, defense:16, speed:42, exp:100,  chapter:1, boss:false, bonus:false, description:"自然の中で突然現れた！",       bgColor:"#0d1f0d", borderColor:"#16a34a" },
+  hardPuzzle:    { id:"hardPuzzle",    name:"難しいパズル",          emoji:"🧩",  maxHp:420, attack:52, defense:36, speed:48, exp:160,  chapter:2, boss:false, bonus:false, description:"ボードゲームカフェの難問！",     bgColor:"#1e1b4b", borderColor:"#7c3aed" },
+  christmasTree: { id:"christmasTree", name:"クリスマスツリー",      emoji:"🎄",  maxHp:600, attack:58, defense:30, speed:36, exp:450,  chapter:2, boss:false, bonus:true,  description:"ボーナスバトル！大量経験値！",   bgColor:"#1c1200", borderColor:"#d97706" },
+  sasikama:      { id:"sasikama",      name:"笹かま大将",            emoji:"🍱",  maxHp:400, attack:60, defense:26, speed:64, exp:190,  chapter:2, boss:false, bonus:false, description:"仙台名物が立ちはだかる！",       bgColor:"#0f1e1a", borderColor:"#0d9488" },
+  iceCreamCake:  { id:"iceCreamCake",  name:"31アイスクリームケーキ", emoji:"🍰",  maxHp:480, attack:62, defense:24, speed:52, exp:600,  chapter:2, boss:false, bonus:true,  description:"甘くて強力なボーナスボス！",     bgColor:"#1a0a1a", borderColor:"#ec4899" },
+  frenchDinner:  { id:"frenchDinner",  name:"豪華フレンチコース",    emoji:"🍽️",  maxHp:520, attack:64, defense:32, speed:56, exp:700,  chapter:2, boss:false, bonus:true,  description:"Masayaの誕生日ボーナス！",       bgColor:"#1a1000", borderColor:"#f59e0b" },
+  rollercoaster: { id:"rollercoaster", name:"絶叫コースター",        emoji:"🎢",  maxHp:520, attack:74, defense:26, speed:82, exp:320,  chapter:2, boss:false, bonus:false, description:"富士急の恐怖に打ち勝て！",       bgColor:"#1a0505", borderColor:"#ef4444" },
+  accenture:     { id:"accenture",     name:"大企業の壁",            emoji:"🏢",  maxHp:840, attack:82, defense:56, speed:62, exp:520,  chapter:3, boss:false, bonus:false, description:"Masayaの前に立ちはだかる！",     bgColor:"#0a0f1a", borderColor:"#3b82f6" },
+  anxiety:       { id:"anxiety",       name:"この先の不安",          emoji:"🌑",  maxHp:1180, attack:98, defense:58, speed:66, exp:1200, chapter:3, boss:true,  bonus:false, description:"二人の絆で乗り越えろ！",       bgColor:"#0f0510", borderColor:"#9333ea" },
+  anxietyFinal:  { id:"anxietyFinal",  name:"不安の残骸",            emoji:"💥",  maxHp:420, attack:90, defense:36, speed:74, exp:0,    chapter:3, boss:true,  bonus:false, description:"心に残った最後の不安。二人で終わらせよう。", bgColor:"#0f0510", borderColor:"#f43f5e" },
+};
+const SCENARIO = [
+  // ─── 第1章 ───
+  { type:"dialogue", id:"ch1_intro", bgColor:"#050d10", bgImage:BG.forest,
+    pages:[
+      { speaker:"ナレーション", emoji:"📖", text:"第1章：出会い" },
+      { speaker:"ナレーション", emoji:"🚗", text:"ドライブで自然豊かな場所へ。広大な緑の中、二人は並んで歩いた。" },
+      { speaker:"Masaya",     emoji:"👨", text:"やっぱり田舎は空気が美味しいし、景色がいいね。" },
+      { speaker:"Natsumi",    emoji:"👩", text:"うん…なんか、遠くまで来た感じがして、不思議な感覚。" },
+      { speaker:"Masaya",     emoji:"👨", text:"こうやって二人で出かけるの、初めてだね。" },
+      { speaker:"Natsumi",    emoji:"👩", text:"だね。スマホの電波も弱いし、こういうの逆に落ち着くかも。" },
+      { speaker:"Masaya",     emoji:"👨", text:"わかる。たまにはこういう日もいいよね。…ん？なんかそこに動物いない？" },
+      { speaker:"Natsumi",    emoji:"👩", text:"えっ、どこどこ？……あ、ネコだ！こっち来る！" },
+    ],
+  },
+  { type:"battle", enemyId:"wildBear" },
+  { type:"dialogue", id:"ch1_hanabi", bgColor:"#050a1a", bgImage:BG.night,
+    pages:[
+      { speaker:"ナレーション", emoji:"🎆", text:"静かな公園で線香花火の明かりが灯る。二人は並んで、静かにその光を見つめていた。" },
+      { speaker:"Natsumi",    emoji:"👩", text:"線香花火って、最後にぽとって落ちる瞬間がちょっとさみしいよね。" },
+      { speaker:"Masaya",     emoji:"👨", text:"…今日一日楽しかったね。" },
+      { speaker:"Natsumi",    emoji:"👩", text:"なに、あらたまって。" },
+      { speaker:"Masaya",     emoji:"👨", text:"…ねえ、なつみちゃん。" },
+      { speaker:"Natsumi",    emoji:"👩", text:"え、なに？" },
+      { speaker:"Masaya",     emoji:"👨", text:"僕、Natsumiちゃんのことが好きです。付き合いたいと思ってる。" },
+      { speaker:"Natsumi", emoji:"👩", text:"Masayaが真剣な目で見ている。どう答える？",
+        choices:[
+          { label:"💗 付き合う！", bondDelta:20, branchId:"ch1_yes" },
+          { label:"😶 断る…",                   branchId:"ch1_no"  },
+        ],
+      },
+    ],
+    branches:{
+      ch1_yes:[
+        { speaker:"Natsumi",    emoji:"👩", text:"…うん！私も、好きだよ。これからよろしくね。" },
+        { speaker:"Masaya",     emoji:"👨", text:"よかった、付き合えて... こちらこそよろしくね。" },
+        { speaker:"Natsumi",    emoji:"👩", text:"なんか照れるね、こういうの。" },
+        { speaker:"Masaya",     emoji:"👨", text:"うん。でも、ちゃんと言えてよかった。…そろそろ帰ろっか、もう暗いし。" },
+        { speaker:"ナレーション", emoji:"💑", text:"暗闇の中で、二人の関係が始まった。\n連携 ＋20！" },
+      ],
+      ch1_no:[
+        { speaker:"Natsumi",    emoji:"👩", text:"ごめん、私…" },
+        { speaker:"ナレーション", emoji:"💔", text:"物語は終わってしまった…", gameOver:true },
+      ],
+    },
+  },
+  // ★ スキル習得：告白の夜
+  { type:"skill_unlock", who:"natsumi", skillId:"inspire", message:"告白の夜、Natsumiの内なる力が目覚めた…！" },
+  // ─── 第2章 ───
+  { type:"dialogue", id:"ch2_intro", bgColor:"#0a0a0a", bgImage:BG.cafe,
+    pages:[
+      { speaker:"ナレーション", emoji:"📖", text:"第2章：楽しい日々" },
+      { speaker:"ナレーション", emoji:"🎲", text:"ボードゲームカフェへ。二人は難しいゲームに挑戦した。" },
+      { speaker:"Masaya",     emoji:"👨", text:"このゲーム、ルール説明だけで10分かかったね。" },
+      { speaker:"Natsumi",    emoji:"👩", text:"もう半分わかってないけど、とりあえず勝てばいいんでしょ？" },
+      { speaker:"Masaya",     emoji:"👨", text:"その意気（笑）まあ、二人で力合わせればなんとかなるか。" },
+    ],
+  },
+  { type:"battle", enemyId:"hardPuzzle" },
+  // ★ スキル習得：ボウリングでの応援
+  { type:"skill_unlock", who:"masaya", skillId:"cheer", message:"Natsumiを応援するうち、Masayaは新たな力を得た！" },
+  { type:"dialogue", id:"ch2_bowling", bgColor:"#060a12", bgImage:BG.bowling,
+    pages:[
+      { speaker:"ナレーション", emoji:"🎳", text:"ボウリングへ。Natsumiはなかなかストライクが出ない。" },
+      { speaker:"Masaya",  emoji:"👨", text:"惜しい！あと少しだよ。" },
+      { speaker:"Natsumi", emoji:"👩", text:"もう〜！なんでそんな上手いの？" },
+      { speaker:"Masaya",  emoji:"👨", text:"昔ちょっとやってただけだよ。コツあるんだ、これが。" },
+      { speaker:"Natsumi", emoji:"👩", text:"Masayaにコツを聞く？それとも自分でやる？",
+        choices:[
+          { label:"🤝 教えて！",    bondDelta:10, statDelta:{ wisdom:5 }, effectLabel:"賢さ＋5・連携＋10", branchId:"bowling_teach" },
+          { label:"💪 自分でやる！", bondDelta:5,  statDelta:{ power:5 },  effectLabel:"力＋5・連携＋5",   branchId:"bowling_self" },
+        ],
+      },
+    ],
+    branches:{
+      bowling_teach:[
+        { speaker:"Masaya",  emoji:"👨", text:"じゃあ、こう持つといいよ。ほら、当たった！" },
+        { speaker:"Natsumi", emoji:"👩", text:"ほんとだ！やったあ！" },
+      ],
+      bowling_self:[
+        { speaker:"Natsumi", emoji:"👩", text:"えいっ！…ストライク！！やった！！" },
+        { speaker:"Masaya",  emoji:"👨", text:"すごい！さすが！！" },
+      ],
+    },
+  },
+  { type:"battle", enemyId:"christmasTree" },
+  { type:"item", id:"ch2_xmas_item", gifts:[
+    { who:"Natsumi", name:"Acne Studios マフラー", emoji:"🧣", equipId:"acne_scarf", bonus:{ defense:12, maxHp:50 }, description:"Masayaからのクリスマスプレゼント。" },
+    { who:"Masaya",  name:"AirPods",          emoji:"🎧", equipId:"airpods", bonus:{ speed:14, maxMp:25 }, description:"「これで俺の声、いつでも届くぞ」" },
+  ]},
+  { type:"battle", enemyId:"sasikama" },
+  { type:"dialogue", id:"ch2_fujiko", bgColor:"#0a060a", bgImage:BG.museum,
+    pages:[
+      { speaker:"ナレーション", emoji:"🗺️", text:"藤子・F・不二雄ミュージアム。二人はドラえもんの展示を見て回っていた。" },
+      { speaker:"Masaya",     emoji:"👨", text:"さっきはごめんね、あのカチューシャ可愛くない？" },
+      { speaker:"Natsumi",    emoji:"👩", text:"確かに、めっちゃ可愛い。" },
+      { speaker:"Masaya",     emoji:"👨", text:"専用のプリ機もあるよ、一緒にとろっか！" },
+      { speaker:"Natsumi",    emoji:"👩", text:"とろっか！あとでガチャガチャもやりたい！" },
+      { speaker:"ナレーション", emoji:"🌀", text:"はじめは少し喧嘩もしたが、二人の仲は深まっていた。" },
+    ],
+  },
+  { type:"battle", enemyId:"iceCreamCake",  levelUp:{ who:"Natsumi", newLevel:20, skillUnlock:{ who:"natsumi", skillId:"teamwork" } } },
+  { type:"item", id:"ch2_natsumi_bday", gifts:[
+    { who:"Natsumi", name:"Miu Miu 財布", emoji:"👛", equipId:"miumiu_wallet", bonus:{ attack:14, speed:8 }, description:"Natsumiの誕生日プレゼント。Natsumiに似合うかわいい財布。" },
+  ]},
+  { type:"battle", enemyId:"frenchDinner", levelUp:{ who:"Masaya", newLevel:24, skillUnlock:{ who:"masaya", skillId:"break" } } },
+  { type:"item", id:"ch2_masaya_bday", gifts:[
+    { who:"Masaya", name:"BALENCIAGA 財布", emoji:"👜", equipId:"balenciaga_wallet", bonus:{ attack:16, defense:8 }, description:"Masayaの誕生日プレゼント。Masayaに合う個性的な財布。" },
+  ]},
+  { type:"battle", enemyId:"rollercoaster" },
+  { type:"dialogue", id:"ch2_cruise", bgColor:"#050a14", bgImage:BG.xmas,
+    pages:[
+      { speaker:"ナレーション", emoji:"🚢", text:"クリスマス、クルージング。東京湾に浮かぶ船の上で、二人は夜景を眺めた。" },
+      { speaker:"Masaya",     emoji:"👨", text:"綺麗だね。雨もやんで良かった。" },
+      { speaker:"Natsumi",    emoji:"👩", text:"ここまであっという間だったね。色々あったけど。" },
+      { speaker:"Masaya",     emoji:"👨", text:"うん。でも全部、来てよかったって思えるやつばっかりだよ。" },
+      { speaker:"Natsumi",    emoji:"👩", text:"来年も来ようね。絶対。" },
+      { speaker:"Masaya",     emoji:"👨", text:"もちろん。これから先も一緒にね。" },
+      { speaker:"ナレーション", emoji:"💑", text:"二人の連携が大きく高まった！ Bond ＋30", bondDelta:30 },
+    ],
+  },
+  // ★ スキル習得：クルージングの夜
+  { type:"skill_unlock", who:"natsumi", skillId:"yell", message:"二人で過ごす時間が、Natsumiに支え合う力をくれた！" },
+  // ─── 第3章 ───
+  { type:"dialogue", id:"ch3_intro", bgColor:"#080808",
+    pages:[
+      { speaker:"ナレーション", emoji:"📖", text:"第3章：すれ違い" },
+      { speaker:"ナレーション", emoji:"🏠", text:"同棲開始。二人は一緒に暮らし始めた。" },
+      { speaker:"Masaya",     emoji:"👨", text:"服とか出しっぱなしじゃん。使わないものはちゃんとしまうよ！" },
+      { speaker:"Natsumi",    emoji:"👩", text:"うるさい！今片付けようとしてたじゃん！" },
+      { speaker:"Natsumi",    emoji:"👩", text:"Masayaくんこそ洗い物全然しないじゃん。" },
+      { speaker:"Masaya",     emoji:"👨", text:"それは…後でまとめてやろうと思ってただけだよ。" },
+      { speaker:"Natsumi",    emoji:"👩", text:"毎回それ言って、結局溜めるじゃん。" },
+      { speaker:"Masaya",     emoji:"👨", text:"……。なんか、最近こういうの増えたね。" },
+      { speaker:"Natsumi",    emoji:"👩", text:"……うん。ちょっと、お互い疲れてるのかもね。" },
+      { speaker:"ナレーション", emoji:"💑", text:"二人の連携に少し亀裂が入る。 Bond -20", bondDelta:-20 },
+    ],
+  },
+  { type:"battle", enemyId:"accenture", partnerHpPenalty:120 },
+  { type:"dialogue", id:"ch3_gunma", bgColor:"#050b0b", bgImage:BG.hotel,
+    pages:[
+      { speaker:"ナレーション", emoji:"♨️",  text:"群馬旅行。慣れない仕事で疲れたMasayaは久しぶりにリラックスしているようだ。" },
+      { speaker:"Masaya",     emoji:"👨", text:"最高だ…生き返る。来てよかった。" },
+      { speaker:"Natsumi",    emoji:"👩", text:"景色すごく綺麗だね。終わっちゃうのがさみしい。" },
+      { speaker:"Masaya",     emoji:"👨", text:"…この前は、ごめんね。余裕なくて、きつい言い方しちゃった。" },
+      { speaker:"Natsumi",    emoji:"👩", text:"ううん、私も。…ちゃんと話せてよかった。" },
+      { speaker:"Masaya",     emoji:"👨", text:"うん。やっぱ、溜め込まないでちゃんと向き合わないとだね。" },
+      { speaker:"ナレーション", emoji:"💚", text:"温泉に入り、MasayaのHPが大きく回復した！", partnerHpRestore:120 },
+    ],
+  },
+  { type:"battle", enemyId:"anxiety" },
+  { type:"dialogue", id:"ch3_choice", bgColor:"#0a050f", bgImage:BG.space,
+    pages:[
+      { speaker:"ナレーション", emoji:"🌌", text:"大きな不安を打ち破った。けれど、胸の奥にはまだ小さなわだかまりが残っている。" },
+      { speaker:"Masaya",     emoji:"👨", text:"正直さ、これで不安が全部消えたわけじゃないんだ。仕事も、将来のことも。" },
+      { speaker:"Natsumi",    emoji:"👩", text:"…私もそう。完璧じゃないし、これからもきっと喧嘩する。" },
+      { speaker:"Masaya",     emoji:"👨", text:"だよね。…でも、さっき不安と向き合っててやっと分かったんだ。" },
+      { speaker:"Natsumi",    emoji:"👩", text:"うん。" },
+      { speaker:"Masaya",     emoji:"👨", text:"一人で抱え込むから、不安が大きく見えるんだって。二人なら、きっと大丈夫。" },
+      { speaker:"Masaya", emoji:"👨", text:"これからも二人で進んでいきますか？",
+        choices:[
+          { label:"💗 はい、一緒に！", bondDelta:30, branchId:"ch3_yes" },
+          { label:"😶 いいえ…",                     branchId:"ch3_no"  },
+        ],
+      },
+    ],
+    branches:{
+      ch3_yes:[
+        { speaker:"Natsumi",    emoji:"👩", text:"…うん。一緒なら、まだ残ってる不安だってきっと越えられる。" },
+        { speaker:"Masaya",     emoji:"👨", text:"だよね。じゃあ最後に、僕らの中に残ったこの不安を——ちゃんと二人で片付けに行こう。" },
+        { speaker:"Natsumi",    emoji:"👩", text:"うん！もう逃げない。二人でちゃんと終わらせよう！" },
+        { speaker:"ナレーション", emoji:"💫", text:"二人の決意が、心に残った最後の不安を呼び覚ます。\nそれは形を取り、二人の前に立ちはだかった——", },
+      ],
+      ch3_no:[
+        { speaker:"ナレーション", emoji:"🌑", text:"決意が揺らいだ。不安に飲み込まれてしまう…\nもう一度ボス戦から挑戦しよう。", retryBoss:true },
+      ],
+    },
+  },
+  { type:"battle", enemyId:"anxietyFinal", isFinal:true },
+  { type:"ending" },
+];
+
+// ================================================================
+// § gameUtils  ─  乱数・計算・セーブ・ロード
+// ================================================================
+
+const rand      = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
+const calcPhys  = (atk, def) => Math.max(1, atk - Math.floor(def * .5) + rand(-6, 6));
+const calcSkill = (atk, mult, def) => Math.max(1, Math.floor(atk * mult) + rand(-8, 8) - Math.floor(def * .3));
+const wait      = ms => new Promise(r => setTimeout(r, ms));
+const SAVE_KEY  = "natsumiRPG_v2";
+
+function fmtDate(ts) {
+  const d = new Date(ts);
+  return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
+}
+function saveGame(data) {
+  const json = JSON.stringify({ ...data, savedAt: Date.now() });
+  try { localStorage.setItem(SAVE_KEY, json); } catch {}
+  try {
+    const blob = new Blob([json], { type:"application/json" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url; a.download = "natsumi_save.json";
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
+  } catch {}
+}
+function loadGame() {
+  try { const s = localStorage.getItem(SAVE_KEY); return s ? JSON.parse(s) : null; } catch { return null; }
+}
+function loadGameFromFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => { try { resolve(JSON.parse(e.target.result)); } catch { reject(); } };
+    reader.onerror = reject;
+    reader.readAsText(file);
+  });
+}
+
+// ================================================================
+// § uiComponents  ─  汎用UIパーツ
+// ================================================================
+
+function StatusBar({ current, max, type="hp", label }) {
+  const pct  = Math.max(0, Math.min(100, current / max * 100));
+  const grad = type === "mp"
+    ? "linear-gradient(90deg,#3b82f6,#60a5fa)"
+    : pct > 50 ? "linear-gradient(90deg,#22c55e,#4ade80)"
+    : pct > 25 ? "linear-gradient(90deg,#eab308,#facc15)"
+    :             "linear-gradient(90deg,#ef4444,#f87171)";
+  return (
+    <div style={{ marginBottom:4 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:"#94a3b8", marginBottom:2 }}>
+        <span style={{ color: type==="mp" ? "#60a5fa" : "#94a3b8" }}>{label || (type==="hp" ? "HP" : "MP")}</span>
+        <span style={{ fontWeight:"bold", color: type==="hp" && pct<25 ? "#f87171" : "#e2e8f0" }}>{current} / {max}</span>
+      </div>
+      <div style={{ height:7, background:"#1e293b", borderRadius:4, overflow:"hidden", border:"1px solid #334155" }}>
+        <div style={{ width:`${pct}%`, height:"100%", background:grad, borderRadius:4, transition:"width .35s ease" }} />
+      </div>
+    </div>
+  );
+}
+function EnemyArea({ enemy }) {
+  return (
+    <div style={{ padding:"6px 12px 4px", flexShrink:0 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:5 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+          <span style={{ color:"#f1f5f9", fontSize:14, fontWeight:"bold" }}>{enemy.name}</span>
+          {enemy.boss  && <span style={{ background:"#dc2626", color:"#fff", fontSize:9, padding:"1px 4px", borderRadius:3, fontWeight:"bold" }}>BOSS</span>}
+          {enemy.bonus && <span style={{ background:"#d97706", color:"#fff", fontSize:9, padding:"1px 4px", borderRadius:3, fontWeight:"bold" }}>BONUS</span>}
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:7 }}>
+          <span style={{ color:"#fbbf24", fontSize:9 }}>SPD {enemy.speed}</span>
+          <span style={{ color:"#475569", fontSize:10 }}>第{enemy.chapter}章</span>
+        </div>
+      </div>
+      <StatusBar current={enemy.hp} max={enemy.maxHp} label="敵HP" />
+    </div>
+  );
+}
+function EnemyGraphic({ enemy, shaking, flashing }) {
+  return (
+    <div style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", minHeight:0 }}>
+      <div
+        className={`${enemy.boss ? "boss-glow " : ""}${!shaking ? "enemy-float" : ""}`}
+        style={{
+          width:108, height:108,
+          background:`linear-gradient(135deg,${enemy.bgColor},#05050f)`,
+          border:`2px solid ${enemy.borderColor}`,
+          borderRadius:18,
+          display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:4,
+          animation: shaking ? "shake .35s ease" : undefined,
+          opacity: flashing ? .25 : 1, transition:"opacity .06s",
+          boxShadow:`0 4px 16px ${enemy.borderColor}44`,
+          position:"relative", overflow:"hidden",
+        }}
+      >
+        <div style={{ position:"absolute", inset:0, background:`radial-gradient(circle at 50% 40%,${enemy.borderColor}22,transparent 70%)`, pointerEvents:"none" }} />
+        <span style={{ fontSize:44, lineHeight:1, filter:flashing ? "brightness(3)" : "none" }}>{enemy.emoji}</span>
+        <span style={{ fontSize:9, color:"#64748b", textAlign:"center", padding:"0 6px", lineHeight:1.3 }}>{enemy.description}</span>
+      </div>
+    </div>
+  );
+}
+// バトル中のキャラ立ち絵（敵と対面）
+function PartyPortraits({ partner }) {
+  return (
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", padding:"0 18px", marginTop:-6, marginBottom:2, pointerEvents:"none" }}>
+      <Avatar who="natsumi" size={58} radius={14} border="2px solid #fda4af" glow="0 4px 14px rgba(244,114,182,.5)" />
+      <Avatar who="masaya"  size={58} radius={14} border="2px solid #93c5fd" glow="0 4px 14px rgba(147,197,253,.5)" gray={partner.ko} style={{ opacity:partner.ko ? .4 : 1, transition:"opacity .3s" }} />
+    </div>
+  );
+}
+function PlayerStatus({ player, partner }) {
+  return (
+    <div style={{ padding:"4px 10px 6px", background:"linear-gradient(to top,#05050f 60%,transparent)", borderTop:"1px solid #1e293b", flexShrink:0, display:"grid", gridTemplateColumns:"1fr 1fr", gap:"0 8px" }}>
+      <div style={{ display:"flex", gap:6, alignItems:"flex-start" }}>
+        <Avatar who="natsumi" size={42} radius={10} border="2px solid #fda4af" glow="0 2px 8px rgba(244,114,182,.4)" />
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:4, marginBottom:2 }}>
+            <span style={{ color:"#f1f5f9", fontSize:12, fontWeight:"bold" }}>{player.name}</span>
+            <span style={{ color:"#475569", fontSize:9 }}>Lv.{player.level}</span>
+            <span style={{ color:"#fbbf24", fontSize:9, marginLeft:"auto" }}>SPD {player.speed}</span>
+          </div>
+          <StatusBar current={player.hp} max={player.maxHp} type="hp" />
+          <StatusBar current={player.mp} max={player.maxMp} type="mp" />
+        </div>
+      </div>
+      <div style={{ display:"flex", gap:6, alignItems:"flex-start", opacity:partner.ko ? .45 : 1, transition:"opacity .3s" }}>
+        <Avatar who="masaya" size={42} radius={10} border="2px solid #93c5fd" glow="0 2px 8px rgba(147,197,253,.4)" gray={partner.ko} />
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:4, marginBottom:2 }}>
+            <span style={{ color:"#93c5fd", fontSize:12, fontWeight:"bold" }}>{partner.name}</span>
+            <span style={{ color:"#475569", fontSize:9 }}>Lv.{partner.level}</span>
+            {partner.ko
+              ? <span style={{ background:"#7f1d1d", color:"#fca5a5", fontSize:9, padding:"1px 3px", borderRadius:3, fontWeight:"bold", marginLeft:"auto" }}>KO</span>
+              : <span style={{ color:"#fbbf24", fontSize:9, marginLeft:"auto" }}>SPD {partner.speed}</span>
+            }
+          </div>
+          <StatusBar current={partner.hp} max={partner.maxHp} type="hp" />
+          <StatusBar current={partner.mp} max={partner.maxMp} type="mp" />
+        </div>
+      </div>
+    </div>
+  );
+}
+function BattleLog({ logs, logRef }) {
+  const S = { damage:{color:"#f87171",icon:"⚔️"}, heal:{color:"#4ade80",icon:"💚"}, skill:{color:"#c084fc",icon:"✨"}, system:{color:"#fbbf24",icon:"📢"}, normal:{color:"#e2e8f0",icon:"▶"} };
+  return (
+    <div ref={logRef} style={{ flex:"0 0 72px", overflowY:"auto", padding:"5px 10px", background:"#080810", borderTop:"1px solid #1e293b", borderBottom:"1px solid #1e293b" }}>
+      {logs.map((log, i) => { const s = S[log.type] || S.normal; return (
+        <div key={i} className="log-entry" style={{ padding:"2px 0", color:s.color, fontSize:11, lineHeight:1.5, display:"flex", gap:4 }}>
+          <span style={{ flexShrink:0, fontSize:9 }}>{s.icon}</span><span>{log.text}</span>
+        </div>
+      );})}
+    </div>
+  );
+}
+function SaveToast({ show }) {
+  return (
+    <div style={{ position:"absolute", top:50, left:"50%", transform:"translateX(-50%)", background:"#1e293b", border:"1px solid #059669", borderRadius:8, padding:"6px 16px", color:"#4ade80", fontSize:12, fontWeight:"bold", opacity:show ? 1 : 0, transition:"opacity .4s", pointerEvents:"none", zIndex:100, whiteSpace:"nowrap" }}>
+      💾 セーブしました
+    </div>
+  );
+}
+// 素早さ順バッジ
+function TurnOrderBadge({ player, partner, enemy }) {
+  if (!enemy) return null;
+  const actors = [
+    { label:"👩", spd:player.speed },
+    ...(!partner.ko ? [{ label:"👨", spd:partner.speed }] : []),
+    { label:enemy.emoji, spd:enemy.speed },
+  ].sort((a, b) => b.spd - a.spd);
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:3 }}>
+      <span style={{ color:"#fbbf24", fontSize:9 }}>⚡</span>
+      {actors.map((a, i) => (
+        <React.Fragment key={i}>
+          {i > 0 && <span style={{ color:"#334155", fontSize:9 }}>›</span>}
+          <span style={{ fontSize:11 }}>{a.label}</span>
+          <span style={{ color:"#94a3b8", fontSize:8 }}>{a.spd}</span>
+        </React.Fragment>
+      ))}
+    </div>
+  );
+}
+
+// ================================================================
+// § battleUI  ─  バトル画面UIコンポーネント
+// ================================================================
+
+function ActionBtn({ label, emoji, onClick, grad, shadow, disabled, col, row, tall }) {
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      gridColumn:col, gridRow:row,
+      background: disabled ? "#1e293b" : grad,
+      border:"none", borderRadius:12,
+      color: disabled ? "#475569" : "#fff",
+      fontWeight:"bold", cursor: disabled ? "not-allowed" : "pointer",
+      display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:2,
+      boxShadow: disabled ? "none" : shadow, fontSize:13,
+      WebkitTapHighlightColor:"transparent",
+    }}>
+      <span style={{ fontSize: tall ? 22 : 20 }}>{emoji}</span>
+      <span>{label}</span>
+    </button>
+  );
+}
+function NatsumiCommandButtons({ onFight, onSkill, onItem, onSave, onEquip, onTitle, disabled }) {
+  return (
+    <div style={{ flex:1, display:"flex", flexDirection:"column", background:"#0c0c1a", overflow:"hidden" }}>
+      <div style={{ padding:"3px 10px 2px", borderBottom:"1px solid #1e293b", display:"flex", alignItems:"center", gap:6 }}>
+        <Avatar who="natsumi" size={24} radius={7} border="1.5px solid #fda4af" />
+        <span style={{ color:"#fda4af", fontSize:11, fontWeight:"bold" }}>Natsumiのコマンド</span>
+      </div>
+      <div style={{ flex:1, display:"grid", gridTemplateColumns:"1fr 1fr", gridTemplateRows:"1fr 1fr 32px", gap:5, padding:"5px 10px 7px" }}>
+        <ActionBtn label="たたかう" emoji="⚔️" onClick={onFight} col="1" row="1 / 3" tall
+          grad="linear-gradient(135deg,#dc2626,#b91c1c)" shadow="0 4px 12px rgba(220,38,38,.45)" disabled={disabled} />
+        <ActionBtn label="スキル"   emoji="✨" onClick={onSkill} col="2" row="1"
+          grad="linear-gradient(135deg,#7c3aed,#6d28d9)" shadow="0 4px 12px rgba(124,58,237,.4)" disabled={disabled} />
+        <ActionBtn label="アイテム" emoji="🎒" onClick={onItem}  col="2" row="2"
+          grad="linear-gradient(135deg,#059669,#047857)" shadow="0 4px 12px rgba(5,150,105,.4)" disabled={disabled} />
+        <div style={{ gridColumn:"1 / 3", gridRow:"3", display:"flex", gap:5 }}>
+          <button onClick={onSave} style={{ flex:1, background:"#1e293b", border:"1px solid #334155", borderRadius:8, color:"#94a3b8", fontSize:10, fontWeight:"bold", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:3 }}>
+            <span>💾</span><span>セーブ</span>
+          </button>
+          <button onClick={onEquip} style={{ flex:1, background:"#1e293b", border:"1px solid #334155", borderRadius:8, color:"#94a3b8", fontSize:10, fontWeight:"bold", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:3 }}>
+            <span>🎽</span><span>そうび</span>
+          </button>
+          <button onClick={onTitle} style={{ flex:1, background:"#1e293b", border:"1px solid #334155", borderRadius:8, color:"#94a3b8", fontSize:10, fontWeight:"bold", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:3 }}>
+            <span>🏠</span><span>タイトル</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+function MasayaCommandButtons({ partner, onFight, onSkill, disabled }) {
+  return (
+    <div style={{ flex:1, display:"flex", flexDirection:"column", background:"#0a0c18", overflow:"hidden" }}>
+      <div style={{ padding:"3px 10px 2px", borderBottom:"1px solid #1e293b", display:"flex", alignItems:"center", gap:6 }}>
+        <Avatar who="masaya" size={24} radius={7} border="1.5px solid #93c5fd" />
+        <span style={{ color:"#93c5fd", fontSize:11, fontWeight:"bold" }}>Masayaのコマンド</span>
+        <span style={{ color:"#475569", fontSize:9, marginLeft:"auto" }}>MP {partner.mp}/{partner.maxMp}</span>
+      </div>
+      <div style={{ flex:1, display:"grid", gridTemplateColumns:"1fr 1fr", gap:5, padding:"5px 10px 7px" }}>
+        <ActionBtn label="たたかう" emoji="⚔️" onClick={onFight}
+          grad="linear-gradient(135deg,#1e40af,#1d4ed8)" shadow="0 4px 12px rgba(30,64,175,.45)" disabled={disabled} />
+        <ActionBtn label="スキル" emoji="⭐" onClick={onSkill}
+          grad="linear-gradient(135deg,#0e7490,#0891b2)" shadow="0 4px 12px rgba(14,116,144,.4)" disabled={disabled} />
+      </div>
+    </div>
+  );
+}
+function NatsumiSkillMenu({ skills, player, onSelect, onBack }) {
+  return (
+    <div style={{ flex:1, display:"flex", flexDirection:"column", padding:"5px 10px 7px", background:"#0c0c1a", overflow:"hidden" }}>
+      <div style={{ color:"#c084fc", fontSize:11, fontWeight:"bold", marginBottom:4 }}>─ Natsumiのスキル ─</div>
+      <div style={{ flex:1, display:"flex", flexDirection:"column", gap:5, overflowY:"auto" }}>
+        {skills.map(sk => { const ok = player.mp >= sk.mpCost; return (
+          <button key={sk.id} onClick={() => ok && onSelect(sk)} style={{ padding:"6px 10px", background: ok ? "linear-gradient(135deg,#1e1b4b,#2d1b69)" : "#12121e", border:`1px solid ${ok ? "#7c3aed" : "#2d2d40"}`, borderRadius:9, color: ok ? "#e2e8f0" : "#475569", cursor: ok ? "pointer" : "not-allowed", display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:11, flexShrink:0 }}>
+            <span style={{ fontWeight:"bold" }}>{sk.emoji} {sk.name}</span>
+            <div style={{ textAlign:"right" }}>
+              <div style={{ color:"#60a5fa", fontSize:9 }}>MP {sk.mpCost}</div>
+              <div style={{ color:"#94a3b8", fontSize:9 }}>{sk.description}</div>
+            </div>
+          </button>
+        );})}
+      </div>
+      <button onClick={onBack} style={{ marginTop:5, padding:"6px", background:"#1e293b", border:"1px solid #334155", borderRadius:8, color:"#64748b", fontSize:11, cursor:"pointer", flexShrink:0 }}>← もどる</button>
+    </div>
+  );
+}
+function MasayaSkillMenu({ skills, partner, onSelect, onBack }) {
+  return (
+    <div style={{ flex:1, display:"flex", flexDirection:"column", padding:"5px 10px 7px", background:"#0a0c18", overflow:"hidden" }}>
+      <div style={{ color:"#38bdf8", fontSize:11, fontWeight:"bold", marginBottom:4 }}>─ Masayaのスキル ─</div>
+      <div style={{ flex:1, display:"flex", flexDirection:"column", gap:5, overflowY:"auto" }}>
+        {skills.map(sk => { const ok = partner.mp >= sk.mpCost; return (
+          <button key={sk.id} onClick={() => ok && onSelect(sk)} style={{ padding:"6px 10px", background: ok ? "linear-gradient(135deg,#0c1e3a,#0e3a5f)" : "#12121e", border:`1px solid ${ok ? "#0ea5e9" : "#2d2d40"}`, borderRadius:9, color: ok ? "#e2e8f0" : "#475569", cursor: ok ? "pointer" : "not-allowed", display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:11, flexShrink:0 }}>
+            <span style={{ fontWeight:"bold" }}>{sk.emoji} {sk.name}</span>
+            <div style={{ textAlign:"right" }}>
+              <div style={{ color:"#38bdf8", fontSize:9 }}>MP {sk.mpCost}</div>
+              <div style={{ color:"#94a3b8", fontSize:9 }}>{sk.description}</div>
+            </div>
+          </button>
+        );})}
+      </div>
+      <button onClick={onBack} style={{ marginTop:5, padding:"6px", background:"#1e293b", border:"1px solid #334155", borderRadius:8, color:"#64748b", fontSize:11, cursor:"pointer", flexShrink:0 }}>← もどる</button>
+    </div>
+  );
+}
+function ItemMenu({ items, onSelect, onBack }) {
+  const avail = items.filter(i => i.count > 0);
+  return (
+    <div style={{ flex:1, display:"flex", flexDirection:"column", padding:"5px 10px 7px", background:"#0c0c1a", overflow:"hidden" }}>
+      <div style={{ color:"#4ade80", fontSize:11, fontWeight:"bold", marginBottom:4 }}>─ アイテム ─</div>
+      {avail.length === 0
+        ? <div style={{ flex:1, color:"#475569", textAlign:"center", paddingTop:16, fontSize:11 }}>アイテムがない</div>
+        : <div style={{ flex:1, display:"flex", flexDirection:"column", gap:5, overflowY:"auto" }}>
+            {avail.map(it => (
+              <button key={it.id} onClick={() => onSelect(it)} style={{ padding:"6px 10px", background:"linear-gradient(135deg,#052e16,#065f46)", border:"1px solid #059669", borderRadius:9, color:"#e2e8f0", cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:11, flexShrink:0 }}>
+                <span style={{ fontWeight:"bold" }}>{it.emoji} {it.name}</span>
+                <div style={{ textAlign:"right" }}>
+                  <div style={{ color:"#4ade80", fontSize:9 }}>{it.description}</div>
+                  <div style={{ color:"#94a3b8", fontSize:9 }}>残り{it.count}個</div>
+                </div>
+              </button>
+            ))}
+          </div>
+      }
+      <button onClick={onBack} style={{ marginTop:5, padding:"6px", background:"#1e293b", border:"1px solid #334155", borderRadius:8, color:"#64748b", fontSize:11, cursor:"pointer", flexShrink:0 }}>← もどる</button>
+    </div>
+  );
+}
+// ハグの回復対象選択
+function HugTargetButtons({ player, partner, onSelect, onBack }) {
+  return (
+    <div style={{ flex:1, display:"flex", flexDirection:"column", padding:"5px 10px 7px", background:"#0c0c1a", overflow:"hidden" }}>
+      <div style={{ color:"#f472b6", fontSize:11, fontWeight:"bold", marginBottom:6 }}>💕 だれをハグする？</div>
+      <div style={{ flex:1, display:"flex", flexDirection:"column", gap:7 }}>
+        <button onClick={() => onSelect("self")} style={{ flex:1, padding:"10px 14px", background:"linear-gradient(135deg,#3b0764,#6d28d9)", border:"1px solid #a855f7", borderRadius:10, color:"#f1f5f9", fontSize:13, fontWeight:"bold", cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <span style={{ display:"flex", alignItems:"center", gap:6 }}><Avatar who="natsumi" size={20} radius={6} />Natsumi</span>
+          <span style={{ color:"#4ade80", fontSize:11 }}>HP {player.hp}/{player.maxHp}</span>
+        </button>
+        <button onClick={() => !partner.ko && onSelect("partner")} disabled={partner.ko} style={{ flex:1, padding:"10px 14px", background: partner.ko ? "#12121e" : "linear-gradient(135deg,#0c1e3a,#1e3a5f)", border:`1px solid ${partner.ko ? "#2d2d40" : "#3b82f6"}`, borderRadius:10, color: partner.ko ? "#475569" : "#f1f5f9", fontSize:13, fontWeight:"bold", cursor: partner.ko ? "not-allowed" : "pointer", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <span style={{ display:"flex", alignItems:"center", gap:6 }}><Avatar who="masaya" size={20} radius={6} gray={partner.ko} />Masaya{partner.ko ? "（KO）" : ""}</span>
+          <span style={{ color:"#4ade80", fontSize:11 }}>{partner.ko ? "---" : `HP ${partner.hp}/${partner.maxHp}`}</span>
+        </button>
+      </div>
+      <button onClick={onBack} style={{ marginTop:6, padding:"6px", background:"#1e293b", border:"1px solid #334155", borderRadius:8, color:"#64748b", fontSize:11, cursor:"pointer", flexShrink:0 }}>← もどる</button>
+    </div>
+  );
+}
+
+// スキル習得画面（イベント用）
+function SkillUnlockScreen({ event, onDone }) {
+  const sk = [...SKILLS_DATA, ...MASAYA_SKILLS_DATA].find(s => s.id === event.skillId);
+  const isNat = event.who === "natsumi";
+  return (
+    <div className="pop-in" style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:24, background:"linear-gradient(135deg,#0a0a1a,#160f24)" }}>
+      <div style={{ fontSize:42, marginBottom:8 }}>🌟</div>
+      <div style={{ color:"#fbbf24", fontSize:19, fontWeight:"bold", marginBottom:8 }}>スキル習得！</div>
+      <div style={{ color:"#94a3b8", fontSize:11, marginBottom:18, textAlign:"center", maxWidth:230, lineHeight:1.6 }}>{event.message}</div>
+      <div style={{ background:"linear-gradient(135deg,#1a1025,#2d1a4d)", border:"2px solid #a855f7", borderRadius:16, padding:"18px 24px", textAlign:"center", marginBottom:24, width:"100%", maxWidth:260 }}>
+        <div style={{ fontSize:36, marginBottom:8 }}>{sk?.emoji}</div>
+        <div style={{ color:"#e2e8f0", fontSize:16, fontWeight:"bold", marginBottom:4 }}>{sk?.name}</div>
+        <div style={{ color:"#94a3b8", fontSize:11, marginBottom:8 }}>{sk?.description}</div>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+          <Avatar who={isNat ? "natsumi" : "masaya"} size={18} radius={5} />
+          <span style={{ color: isNat ? "#fda4af" : "#93c5fd", fontSize:11, fontWeight:"bold" }}>{isNat ? "Natsumi" : "Masaya"}が覚えた！</span>
+        </div>
+      </div>
+      <button onClick={onDone} style={{ padding:"13px 32px", background:"linear-gradient(135deg,#7c3aed,#6d28d9)", border:"none", borderRadius:12, color:"#fff", fontSize:16, fontWeight:"bold", cursor:"pointer", boxShadow:"0 4px 14px rgba(124,58,237,.4)" }}>了解！</button>
+    </div>
+  );
+}
+
+// タイトルへ戻る確認モーダル
+function TitleConfirmModal({ onConfirm, onCancel }) {
+  return (
+    <div style={{ position:"absolute", inset:0, background:"rgba(0,0,0,0.78)", zIndex:300, display:"flex", alignItems:"center", justifyContent:"center" }}>
+      <div className="pop-in" style={{ background:"linear-gradient(135deg,#0f172a,#1e293b)", border:"1px solid #334155", borderRadius:16, padding:"24px 20px", width:"80%", maxWidth:270, textAlign:"center" }}>
+        <div style={{ fontSize:28, marginBottom:8 }}>🏠</div>
+        <div style={{ color:"#f1f5f9", fontSize:15, fontWeight:"bold", marginBottom:6 }}>タイトルに戻りますか？</div>
+        <div style={{ color:"#64748b", fontSize:11, marginBottom:20, lineHeight:1.5 }}>セーブしていない進行状況は<br/>失われます</div>
+        <div style={{ display:"flex", gap:10 }}>
+          <button onClick={onCancel} style={{ flex:1, padding:"10px", background:"#1e293b", border:"1px solid #334155", borderRadius:10, color:"#94a3b8", fontSize:13, fontWeight:"bold", cursor:"pointer" }}>キャンセル</button>
+          <button onClick={onConfirm} style={{ flex:1, padding:"10px", background:"linear-gradient(135deg,#7f1d1d,#dc2626)", border:"1px solid #ef4444", borderRadius:10, color:"#fff", fontSize:13, fontWeight:"bold", cursor:"pointer" }}>はい</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VictoryScreen({ enemy, expGained, levelUpMsg, skillUnlockMsg, onNext }) {
+  const sk = skillUnlockMsg ? [...SKILLS_DATA, ...MASAYA_SKILLS_DATA].find(s => s.id === skillUnlockMsg.skillId) : null;
+  return (
+    <div className="pop-in" style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:24, background:"linear-gradient(135deg,#0a0a1a,#0f0f24)" }}>
+      <div style={{ fontSize:46, marginBottom:8 }}>🎉</div>
+      <div style={{ color:"#fbbf24", fontSize:22, fontWeight:"bold", marginBottom:5 }}>勝利！</div>
+      <div style={{ color:"#94a3b8", fontSize:13, marginBottom:16, textAlign:"center" }}>{enemy.name}を倒した！</div>
+      <div style={{ background:"#1e293b", border:"1px solid #334155", borderRadius:12, padding:"12px 24px", marginBottom: levelUpMsg ? 10 : 24, textAlign:"center" }}>
+        <div style={{ color:"#fbbf24", fontSize:18, fontWeight:"bold" }}>＋{expGained} EXP</div>
+        {enemy.bonus && <div style={{ color:"#fb923c", fontSize:11, marginTop:3 }}>★ ボーナスバトルクリア！</div>}
+      </div>
+      {levelUpMsg && (
+        <div style={{ background:"linear-gradient(135deg,#1c1200,#2d1e00)", border:"2px solid #fbbf24", borderRadius:12, padding:"10px 24px", marginBottom: sk ? 10 : 24, textAlign:"center", animation:"glow 1.5s ease-in-out infinite" }}>
+          <div style={{ color:"#fbbf24", fontSize:15, fontWeight:"bold" }}>✨ {levelUpMsg} ✨</div>
+        </div>
+      )}
+      {sk && (
+        <div style={{ background:"linear-gradient(135deg,#1a1025,#2d1a4d)", border:"1px solid #a855f7", borderRadius:12, padding:"10px 24px", marginBottom:24, textAlign:"center" }}>
+          <div style={{ color:"#c084fc", fontSize:14, fontWeight:"bold" }}>🌟 {sk.emoji}「{sk.name}」を習得！</div>
+          <div style={{ color:"#94a3b8", fontSize:10, marginTop:2 }}>{skillUnlockMsg.who === "natsumi" ? "Natsumi" : "Masaya"}の新しいスキル</div>
+        </div>
+      )}
+      <button onClick={onNext} style={{ padding:"13px 32px", background:"linear-gradient(135deg,#fbbf24,#d97706)", border:"none", borderRadius:12, color:"#1a1a00", fontSize:16, fontWeight:"bold", cursor:"pointer", boxShadow:"0 4px 14px rgba(251,191,36,.45)" }}>
+        つぎへ →
+      </button>
+    </div>
+  );
+}
+function GameOverScreen({ onRetry, onTitle }) {
+  return (
+    <div className="pop-in" style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:24, background:"linear-gradient(135deg,#1a0505,#0a0505)" }}>
+      <div style={{ fontSize:46, marginBottom:8 }}>💔</div>
+      <div style={{ color:"#ef4444", fontSize:22, fontWeight:"bold", marginBottom:6 }}>やられた…</div>
+      <div style={{ color:"#64748b", fontSize:13, marginBottom:28, textAlign:"center" }}>Natsumiは倒れてしまった</div>
+      <div style={{ display:"flex", flexDirection:"column", gap:10, width:"100%", maxWidth:200 }}>
+        <button onClick={onRetry} style={{ padding:"13px", background:"linear-gradient(135deg,#dc2626,#b91c1c)", border:"none", borderRadius:12, color:"#fff", fontSize:15, fontWeight:"bold", cursor:"pointer" }}>もう一度</button>
+        <button onClick={onTitle} style={{ padding:"10px", background:"#1e293b", border:"1px solid #334155", borderRadius:12, color:"#94a3b8", fontSize:13, cursor:"pointer" }}>🏠 タイトルへ</button>
+      </div>
+    </div>
+  );
+}
+
+// ================================================================
+// § dialogueUI  ─  会話パート（チャット積み上げ式）
+// ================================================================
+
+function MsgBubble({ speaker, emoji, text, choiceLabel, isPast }) {
+  const isNarr   = speaker === "ナレーション";
+  const isMasaya = speaker === "Masaya";
+  return (
+    <div style={{ display:"flex", flexDirection:"column", gap:3, opacity: isPast ? 0.5 : 1, transition:"opacity .25s" }}>
+      {!isNarr && (() => {
+        const icon = <Avatar who={isMasaya ? "masaya" : "natsumi"} size={30} radius={9} border={`1.5px solid ${isMasaya ? "#93c5fd" : "#fda4af"}`} />;
+        return (
+          <div style={{ display:"flex", alignItems:"center", gap:5, justifyContent: isMasaya ? "flex-start" : "flex-end" }}>
+            {isMasaya && icon}
+            <span style={{ color: isMasaya ? "#93c5fd" : "#fda4af", fontSize:10, fontWeight:"bold" }}>{speaker}</span>
+            {!isMasaya && icon}
+          </div>
+        );
+      })()}
+      {choiceLabel ? (
+        <div style={{ display:"flex", justifyContent:"flex-end" }}>
+          <div style={{ background:"linear-gradient(135deg,#4a1942,#7c3aed)", border:"1px solid #a855f7", borderRadius:8, padding:"5px 10px", fontSize:11, color:"#e2e8f0", fontWeight:"bold", maxWidth:"78%" }}>👉 {choiceLabel}</div>
+        </div>
+      ) : (
+        <div style={{ display:"flex", justifyContent: isNarr ? "center" : isMasaya ? "flex-start" : "flex-end" }}>
+          <div style={{
+            background: isNarr ? "transparent" : isMasaya ? "linear-gradient(135deg,#0f2040,#1e3a5f)" : "linear-gradient(135deg,#280f28,#3d1a1a)",
+            border: isNarr ? "none" : `1px solid ${isMasaya ? "#1e40af55" : "#991b1b55"}`,
+            borderRadius: isNarr ? 0 : 10,
+            padding: isNarr ? "3px 4px" : "7px 11px",
+            maxWidth: isNarr ? "100%" : "80%",
+          }}>
+            <p style={{ color: isNarr ? "#64748b" : "#e2e8f0", fontSize: isNarr ? 11 : 13, lineHeight:1.65, fontStyle: isNarr ? "italic" : "normal", whiteSpace:"pre-line", margin:0, textAlign: isNarr ? "center" : "left" }}>{text}</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DialogueScreen({ event, player, onDone, onGameOver, onRetryBoss, applyBondDelta, applyStatDelta, applyPartnerHpRestore, initialPageIdx, initialBranchId, onStateChange }) {
+  const [pageIdx,  setPageIdx]  = useState(initialPageIdx  ?? 0);
+  const [branchId, setBranchId] = useState(initialBranchId ?? null);
+  const scrollRef = useRef(null);
+
+  const buildInitHistory = () => {
+    const result = [];
+    const ip = initialPageIdx ?? 0;
+    const ib = initialBranchId ?? null;
+    if (ib) {
+      for (const p of event.pages) result.push({ speaker:p.speaker, emoji:p.emoji, text:p.text });
+      const bp = event.branches?.[ib] || [];
+      for (let i = 0; i < ip; i++) { if (bp[i]) result.push({ speaker:bp[i].speaker, emoji:bp[i].emoji, text:bp[i].text }); }
+    } else {
+      for (let i = 0; i < ip; i++) { const p = event.pages[i]; if (p) result.push({ speaker:p.speaker, emoji:p.emoji, text:p.text }); }
+    }
+    return result;
+  };
+  const [history, setHistory] = useState(buildInitHistory);
+
+  const pages = branchId ? (event.branches?.[branchId] || []) : event.pages;
+  const page  = pages[pageIdx];
+
+  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [history.length, pageIdx, branchId]);
+  useEffect(() => {
+    if (!page) return;
+    if (page.bondDelta)        applyBondDelta(page.bondDelta);
+    if (page.partnerHpRestore) applyPartnerHpRestore(page.partnerHpRestore);
+  }, [pageIdx, branchId]);
+  useEffect(() => { onStateChange?.(pageIdx, branchId); }, [pageIdx, branchId]);
+
+  if (!page) { onDone(); return null; }
+
+  const pushHistory = (p, choiceLabel) => setHistory(prev => [...prev, { speaker:p.speaker, emoji:p.emoji, text:p.text, choiceLabel }]);
+
+  const advance = () => {
+    if (page.gameOver)  { onGameOver();  return; }
+    if (page.retryBoss) { onRetryBoss(); return; }
+    pushHistory(page);
+    const next = pageIdx + 1;
+    if (next >= pages.length) { onDone(); return; }
+    setPageIdx(next);
+  };
+  const handleChoice = (choice) => {
+    pushHistory(page, choice.label);
+    if (choice.bondDelta) applyBondDelta(choice.bondDelta);
+    if (choice.statDelta) applyStatDelta(choice.statDelta);
+    setBranchId(choice.branchId);
+    setPageIdx(0);
+  };
+
+  const bgColor = event.bgColor || "#050a14";
+  const bgStyle = event.bgImage
+    ? { backgroundImage:`linear-gradient(180deg,rgba(5,5,15,.55),rgba(5,5,15,.82)), url(${event.bgImage})`, backgroundSize:"cover", backgroundPosition:"center" }
+    : { background:`linear-gradient(180deg,${bgColor},#05050f)` };
+  return (
+    <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", ...bgStyle }}>
+      <div style={{ padding:"5px 12px", borderBottom:"1px solid #1e293b", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
+        <span style={{ color:"#94a3b8", fontSize:11 }}>💬 会話パート</span>
+        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+          <span style={{ color:"#ec4899", fontSize:10 }}>絆</span>
+          <div style={{ width:60, height:6, background:"#1e293b", borderRadius:3, overflow:"hidden", border:"1px solid #334155" }}>
+            <div style={{ width:`${Math.min(100, player.bond)}%`, height:"100%", background:"linear-gradient(90deg,#ec4899,#f43f5e)", borderRadius:3, transition:"width .5s ease" }} />
+          </div>
+          <span style={{ color:"#f43f5e", fontSize:10, fontWeight:"bold" }}>{player.bond}</span>
+        </div>
+      </div>
+      <div ref={scrollRef} style={{ flex:1, overflowY:"auto", padding:"10px 14px 6px", display:"flex", flexDirection:"column", gap:10 }}>
+        {history.map((h, i) => <MsgBubble key={i} speaker={h.speaker} emoji={h.emoji} text={h.text} choiceLabel={h.choiceLabel} isPast />)}
+        <MsgBubble speaker={page.speaker} emoji={page.emoji} text={page.text} isPast={false} />
+      </div>
+      <div style={{ padding:"6px 12px 10px", background:"#0c0c1a", borderTop:"1px solid #1e293b", flexShrink:0 }}>
+        {page.choices ? (
+          <div style={{ display:"flex", flexDirection:"column", gap:7 }}>
+            {page.choices.map((c, i) => (
+              <button key={i} onClick={() => handleChoice(c)} style={{ padding:"11px 14px", background: i===0 ? "linear-gradient(135deg,#7f1d1d,#dc2626)" : "linear-gradient(135deg,#1e293b,#334155)", border:`1px solid ${i===0 ? "#f87171" : "#475569"}`, borderRadius:10, color:"#f1f5f9", fontSize:13, fontWeight:"bold", cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <span>{c.label}</span>
+                {c.effectLabel && <span style={{ color:"#fbbf24", fontSize:9 }}>{c.effectLabel}</span>}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <button onClick={advance} style={{ width:"100%", padding:"10px", background:"transparent", border:"1px solid #334155", borderRadius:10, color:"#64748b", fontSize:12, cursor:"pointer" }}>
+            {page.gameOver || page.retryBoss ? "……" : "タップして続ける ▶"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ================================================================
+// § screens  ─  タイトル・エンディング・アイテムイベント
+// ================================================================
+
+function TitleScreen({ onNewGame, onContinue, onContinueFile }) {
+  const save    = loadGame();
+  const fileRef = useRef(null);
+  const [stars] = useState(() => Array.from({ length:30 }, () => ({ x:Math.random()*100, y:Math.random()*100, size:Math.random()*2+1, delay:Math.random()*3, dur:Math.random()*2+2 })));
+  const handleFileChange = async e => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try { onContinueFile(await loadGameFromFile(file)); } catch {}
+    e.target.value = "";
+  };
+  return (
+    <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", background:"linear-gradient(180deg,#05050f,#0a0520,#05050f)", position:"relative", overflow:"hidden" }}>
+      {stars.map((s, i) => <div key={i} style={{ position:"absolute", left:`${s.x}%`, top:`${s.y}%`, width:s.size, height:s.size, borderRadius:"50%", background:"#fff", animation:`star-twinkle ${s.dur}s ease-in-out ${s.delay}s infinite` }} />)}
+      <div style={{ textAlign:"center", marginBottom:40, zIndex:1 }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:10, marginBottom:14 }}>
+          <Avatar who="natsumi" size={62} radius={16} border="2px solid #fda4af" glow="0 4px 16px rgba(244,114,182,.5)" />
+          <span style={{ fontSize:26 }}>💑</span>
+          <Avatar who="masaya" size={62} radius={16} border="2px solid #93c5fd" glow="0 4px 16px rgba(147,197,253,.5)" />
+        </div>
+        <div className="title-glow" style={{ color:"#fbbf24", fontSize:26, fontWeight:"bold", letterSpacing:"0.08em", marginBottom:6 }}>Natumi no Bouken</div>
+        <div style={{ color:"#64748b", fontSize:12, letterSpacing:"0.1em" }}>〜 21歳の誕生日まで 〜</div>
+      </div>
+      <div style={{ display:"flex", flexDirection:"column", gap:12, width:"70%", zIndex:1 }}>
+        <button onClick={onNewGame} style={{ padding:"15px", background:"linear-gradient(135deg,#dc2626,#b91c1c)", border:"none", borderRadius:14, color:"#fff", fontSize:16, fontWeight:"bold", cursor:"pointer", boxShadow:"0 4px 16px rgba(220,38,38,.4)" }}>⚔️ はじめから</button>
+        <button onClick={onContinue} disabled={!save} style={{ padding:"15px", background: save ? "linear-gradient(135deg,#1e40af,#1d4ed8)" : "#1e293b", border:`1px solid ${save ? "#3b82f6" : "#334155"}`, borderRadius:14, color: save ? "#fff" : "#475569", fontSize:16, fontWeight:"bold", cursor: save ? "pointer" : "not-allowed", boxShadow: save ? "0 4px 16px rgba(59,130,246,.4)" : "none" }}>📖 続きから（前回）</button>
+        <button onClick={() => fileRef.current?.click()} style={{ padding:"12px", background:"linear-gradient(135deg,#0f3a2a,#065f46)", border:"1px solid #059669", borderRadius:14, color:"#4ade80", fontSize:14, fontWeight:"bold", cursor:"pointer" }}>📂 ファイルから読み込む</button>
+        <input ref={fileRef} type="file" accept=".json" onChange={handleFileChange} style={{ display:"none" }} />
+      </div>
+      {save && (
+        <div style={{ marginTop:16, color:"#475569", fontSize:11, zIndex:1, textAlign:"center" }}>
+          <div>{save.player?.name} Lv.{save.player?.level}</div>
+          <div>シナリオ {save.scenarioIdx ?? 0} ・ {fmtDate(save.savedAt)}</div>
+        </div>
+      )}
+      <div style={{ position:"absolute", bottom:12, color:"#1e293b", fontSize:10 }}>❤️ Happy 21st Birthday</div>
+    </div>
+  );
+}
+function EndingScreen({ player, partner, onTitle }) {
+  const [stars] = useState(() => Array.from({ length:40 }, () => ({ x:Math.random()*100, y:Math.random()*100, size:Math.random()*3+1, delay:Math.random()*3, dur:Math.random()*2+1.5 })));
+  return (
+    <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", background:"linear-gradient(180deg,#05050f,#0a051a,#05050f)", position:"relative", overflow:"hidden" }}>
+      {stars.map((s, i) => <div key={i} style={{ position:"absolute", left:`${s.x}%`, top:`${s.y}%`, width:s.size, height:s.size, borderRadius:"50%", background:i%3===0?"#fbbf24":i%3===1?"#f43f5e":"#fff", opacity:.8, animation:`star-twinkle ${s.dur}s ease-in-out ${s.delay}s infinite` }} />)}
+      <div style={{ zIndex:1, textAlign:"center", padding:"0 24px" }}>
+        <div style={{ fontSize:56, marginBottom:12 }}>🎂</div>
+        <div className="title-glow" style={{ color:"#fbbf24", fontSize:24, fontWeight:"bold", marginBottom:8 }}>Happy 21st Birthday!</div>
+        <div style={{ color:"#ec4899", fontSize:16, fontWeight:"bold", marginBottom:16 }}>Natsumi、誕生日おめでとう！</div>
+        <div style={{ background:"linear-gradient(135deg,#1a0a1a88,#0a1a1a88)", border:"1px solid #7c3aed", borderRadius:14, padding:"16px 20px", marginBottom:16, backdropFilter:"blur(8px)" }}>
+          <div style={{ color:"#e2e8f0", fontSize:13, lineHeight:1.8, whiteSpace:"pre-line" }}>{`出会いからここまで\nたくさんの冒険をありがとう。\n\n喧嘩もしたけど、笑い合った日々も\n全部が大切な思い出だよ。\n\nこれからもずっと、二人で進んでいこう。\n\nこれからもよろしくね。 ❤️`}</div>
+        </div>
+        <div style={{ display:"flex", justifyContent:"center", gap:20, marginBottom:14 }}>
+          <div style={{ textAlign:"center" }}><Avatar who="natsumi" size={46} radius={12} border="2px solid #fda4af" /><div style={{ color:"#fbbf24", fontSize:11, fontWeight:"bold", marginTop:2 }}>{player.name}</div><div style={{ color:"#64748b", fontSize:10 }}>Lv.{player.level}</div></div>
+          <div style={{ color:"#ec4899", fontSize:20, display:"flex", alignItems:"center" }}>💑</div>
+          <div style={{ textAlign:"center" }}><Avatar who="masaya" size={46} radius={12} border="2px solid #93c5fd" /><div style={{ color:"#93c5fd", fontSize:11, fontWeight:"bold", marginTop:2 }}>{partner.name}</div><div style={{ color:"#64748b", fontSize:10 }}>Lv.{partner.level}</div></div>
+        </div>
+        <div style={{ color:"#475569", fontSize:10, marginBottom:16 }}>THE END ✨</div>
+        <button onClick={onTitle} style={{ padding:"12px 28px", background:"linear-gradient(135deg,#1e293b,#334155)", border:"1px solid #475569", borderRadius:12, color:"#94a3b8", fontSize:14, fontWeight:"bold", cursor:"pointer" }}>🏠 タイトルへ</button>
+      </div>
+    </div>
+  );
+}
+function ItemEventScreen({ event, onDone }) {
+  return (
+    <div className="pop-in" style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:24, background:"linear-gradient(135deg,#0a0a14,#14080a)" }}>
+      <div style={{ fontSize:36, marginBottom:8 }}>🎁</div>
+      <div style={{ color:"#fbbf24", fontSize:18, fontWeight:"bold", marginBottom:20 }}>アイテム入手！</div>
+      <div style={{ display:"flex", flexDirection:"column", gap:12, width:"100%", maxWidth:280, marginBottom:28 }}>
+        {event.gifts.map((g, i) => (
+          <div key={i} className="slide-up" style={{ background:"linear-gradient(135deg,#1a0a1a,#2d0f2d)", border:"1px solid #7c3aed", borderRadius:12, padding:"12px 14px", animationDelay:`${i * 0.12}s` }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
+              <span style={{ fontSize:28 }}>{g.emoji}</span>
+              <div><div style={{ color:"#e2e8f0", fontSize:13, fontWeight:"bold" }}>{g.name}</div><div style={{ color:"#ec4899", fontSize:10 }}>{g.who} が入手！</div></div>
+            </div>
+            <div style={{ color:"#94a3b8", fontSize:11, lineHeight:1.5 }}>{g.description}</div>
+          </div>
+        ))}
+      </div>
+      <button onClick={onDone} style={{ padding:"13px 32px", background:"linear-gradient(135deg,#7c3aed,#6d28d9)", border:"none", borderRadius:12, color:"#fff", fontSize:16, fontWeight:"bold", cursor:"pointer", boxShadow:"0 4px 14px rgba(124,58,237,.4)" }}>つぎへ →</button>
+    </div>
+  );
+}
+
+// 装備画面（オーバーレイ）
+function bonusText(b) {
+  const m = { attack:"攻撃", defense:"防御", speed:"素早さ", maxHp:"最大HP", maxMp:"最大MP" };
+  return Object.entries(b).map(([k,v]) => `${m[k]||k}+${v}`).join("・");
+}
+function EquipScreen({ equipment, player, partner, onToggle, onClose }) {
+  const groups = [
+    { who:"Natsumi", char:player,  color:"#fda4af", icon:"natsumi" },
+    { who:"Masaya",  char:partner, color:"#93c5fd", icon:"masaya" },
+  ];
+  return (
+    <div style={{ position:"absolute", inset:0, background:"rgba(2,2,10,0.94)", zIndex:250, display:"flex", flexDirection:"column" }}>
+      <div style={{ padding:"10px 14px", borderBottom:"1px solid #1e293b", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
+        <span style={{ color:"#fbbf24", fontSize:15, fontWeight:"bold" }}>🎽 そうび</span>
+        <button onClick={onClose} style={{ background:"#1e293b", border:"1px solid #334155", borderRadius:8, color:"#94a3b8", fontSize:12, fontWeight:"bold", padding:"5px 12px", cursor:"pointer" }}>とじる ✕</button>
+      </div>
+      <div style={{ flex:1, overflowY:"auto", padding:"10px 14px" }}>
+        {groups.map(g => {
+          const owned = equipment.filter(e => e.who === g.who);
+          return (
+            <div key={g.who} style={{ marginBottom:14 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:8 }}>
+                <Avatar who={g.icon} size={32} radius={9} border={`2px solid ${g.color}`} />
+                <div>
+                  <div style={{ color:g.color, fontSize:13, fontWeight:"bold" }}>{g.who} <span style={{ color:"#475569", fontSize:10 }}>Lv.{g.char.level}</span></div>
+                  <div style={{ color:"#94a3b8", fontSize:10 }}>⚔️{g.char.attack} 🛡️{g.char.defense} ⚡{g.char.speed} ❤️{g.char.maxHp}</div>
+                </div>
+              </div>
+              {owned.length === 0
+                ? <div style={{ color:"#475569", fontSize:11, padding:"6px 4px" }}>まだ装備がない</div>
+                : <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                    {owned.map(eq => (
+                      <button key={eq.id} onClick={() => onToggle(eq.id)} style={{ padding:"9px 12px", background: eq.equipped ? "linear-gradient(135deg,#1e3a2a,#065f46)" : "#161622", border:`1px solid ${eq.equipped ? "#10b981" : "#334155"}`, borderRadius:10, color:"#e2e8f0", cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:12 }}>
+                        <span style={{ display:"flex", alignItems:"center", gap:7 }}>
+                          <span style={{ fontSize:22 }}>{eq.emoji}</span>
+                          <span>
+                            <span style={{ fontWeight:"bold" }}>{eq.name}</span>
+                            <span style={{ display:"block", color:"#fbbf24", fontSize:10 }}>{bonusText(eq.bonus)}</span>
+                          </span>
+                        </span>
+                        <span style={{ fontSize:11, fontWeight:"bold", color: eq.equipped ? "#34d399" : "#64748b" }}>{eq.equipped ? "✓ 装備中" : "装備する"}</span>
+                      </button>
+                    ))}
+                  </div>
+              }
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ================================================================
+// § App  ─  メインコンポーネント・シナリオ管理・バトルロジック
+//
+// phase:
+//   "select_natsumi"        Natsumiのコマンド選択
+//   "select_natsumi_skill"  Natsumiのスキル選択
+//   "select_natsumi_item"   Natsumiのアイテム選択
+//   "select_masaya"         Masayaのコマンド選択
+//   "select_masaya_skill"   Masayaのスキル選択
+//   "executing"             行動実行中
+//   "victory"               勝利画面
+//   "gameover"              ゲームオーバー
+// ================================================================
+
+function App() {
+  const [screen,       setScreen]       = useState("title");
+  const [player,       setPlayer]       = useState({ ...PLAYER_INITIAL });
+  const [partner,      setPartner]      = useState({ ...PARTNER_INITIAL });
+  const [items,        setItems]        = useState(ITEMS_DATA.map(i => ({ ...i })));
+  const [scenarioIdx,  setScenarioIdx]  = useState(0);
+  const [enemy,        setEnemy]        = useState(null);
+  const [logs,         setLogs]         = useState([]);
+  const [phase,        setPhase]        = useState("select_natsumi");
+  const [shaking,      setShaking]      = useState(false);
+  const [flashing,     setFlashing]     = useState(false);
+  const [showToast,    setShowToast]    = useState(false);
+  const [victoryInfo,  setVictoryInfo]  = useState(null);
+  const [debugMode,    setDebugMode]    = useState(false);
+  const [dialoguePage,   setDialoguePage]   = useState(0);
+  const [dialogueBranch, setDialogueBranch] = useState(null);
+  const [initDlgPage,    setInitDlgPage]    = useState(0);
+  const [initDlgBranch,  setInitDlgBranch]  = useState(null);
+  const [unlockedNat,    setUnlockedNat]    = useState([...NATSUMI_INITIAL_SKILLS]);
+  const [unlockedMas,    setUnlockedMas]    = useState([...MASAYA_INITIAL_SKILLS]);
+  const [equipment,      setEquipment]      = useState([]);
+  const [showTitleConfirm, setShowTitleConfirm] = useState(false);
+  const [showEquip,      setShowEquip]      = useState(false);
+
+  const pendingNatRef = useRef(null); // Natsumiの保留アクション
+  const boostFlagRef  = useRef(false); // 激励バフフラグ
+  const pendingHugRef = useRef(null); // ハグ対象選択用
+
+  const logRef = useRef(null);
+  useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [logs]);
+  const addLog = useCallback((text, type="normal") => setLogs(prev => [...prev, { text, type }]), []);
+  const currentEvent = SCENARIO[scenarioIdx] || null;
+
+  // ── セーブ / タイトル ────────────────────────────────────
+  const handleSave = useCallback(() => {
+    saveGame({ player, partner, items, scenarioIdx, dialoguePage, dialogueBranch, unlockedNat, unlockedMas, equipment });
+    setShowToast(true); setTimeout(() => setShowToast(false), 1800);
+  }, [player, partner, items, scenarioIdx, dialoguePage, dialogueBranch, unlockedNat, unlockedMas, equipment]);
+
+  // タイトルへ戻る：必ず確認を挟む
+  const goTitle = useCallback(() => setShowTitleConfirm(true), []);
+  const confirmGoTitle = useCallback(() => { setShowTitleConfirm(false); setShowEquip(false); setScreen("title"); }, []);
+
+  // 装備の着脱：ステータスに加減算（ネストした状態更新を避けてStrictMode安全）
+  const toggleEquip = useCallback((equipId) => {
+    const eq = equipment.find(e => e.id === equipId);
+    if (!eq) return;
+    const on = !eq.equipped, sign = on ? 1 : -1, b = eq.bonus || {};
+    const upd = c => {
+      const maxHp = c.maxHp + sign*(b.maxHp||0);
+      const maxMp = c.maxMp + sign*(b.maxMp||0);
+      return { ...c,
+        attack:  c.attack  + sign*(b.attack ||0),
+        defense: c.defense + sign*(b.defense||0),
+        speed:   c.speed   + sign*(b.speed  ||0),
+        maxHp, maxMp,
+        hp: Math.max(1, Math.min(maxHp, on ? c.hp + (b.maxHp||0) : c.hp)),
+        mp: Math.min(maxMp, on ? c.mp + (b.maxMp||0) : c.mp),
+      };
+    };
+    if (eq.who === "Natsumi") setPlayer(upd); else setPartner(upd);
+    setEquipment(prev => prev.map(e => e.id === equipId ? { ...e, equipped:on } : e));
+  }, [equipment]);
+
+  // アイテムイベントで装備を入手
+  const handleItemEventDone = useCallback((ev) => {
+    if (ev?.gifts) {
+      setEquipment(prev => {
+        const have = new Set(prev.map(e => e.id));
+        const add = ev.gifts.filter(g => g.equipId && !have.has(g.equipId))
+          .map(g => ({ id:g.equipId, who:g.who, name:g.name, emoji:g.emoji, bonus:g.bonus, equipped:false }));
+        return add.length ? [...prev, ...add] : prev;
+      });
+    }
+    advanceScenario(scenarioIdx);
+  }, [scenarioIdx, advanceScenario]);
+
+  // ── シナリオ起動 ─────────────────────────────────────────
+  const startFromIdx = useCallback((idx) => {
+    const ev = SCENARIO[idx];
+    if (!ev) return;
+    setScenarioIdx(idx);
+    setScreen("battle");
+    if (ev.type === "battle") {
+      const en = { ...ENEMIES_DATA[ev.enemyId], hp: debugMode ? 1 : ENEMIES_DATA[ev.enemyId].maxHp };
+      setEnemy(en);
+      if (ev.partnerHpPenalty) setPartner(prev => ({ ...prev, hp: Math.max(1, prev.hp - ev.partnerHpPenalty) }));
+      setLogs([{ text:"バトル開始！", type:"system" }, { text:`${en.name}が現れた！`, type:"system" }]);
+      setPhase("select_natsumi");
+    }
+  }, [debugMode]);
+
+  const advanceScenario = useCallback((fromIdx) => {
+    const nextIdx = fromIdx + 1;
+    if (nextIdx >= SCENARIO.length) return;
+    const ev = SCENARIO[nextIdx];
+    setScenarioIdx(nextIdx);
+    if (ev.type === "battle") {
+      const en = { ...ENEMIES_DATA[ev.enemyId], hp: debugMode ? 1 : ENEMIES_DATA[ev.enemyId].maxHp };
+      if (ev.partnerHpPenalty) setPartner(prev => ({ ...prev, hp: Math.max(1, prev.hp - ev.partnerHpPenalty) }));
+      setEnemy(en);
+      setLogs([{ text:"バトル開始！", type:"system" }, { text:`${en.name}が現れた！`, type:"system" }]);
+      setPhase("select_natsumi");
+    }
+  }, [debugMode]);
+
+  // ── はじめから / 続きから / ファイルから ─────────────────
+  const applyLoad = useCallback((save) => {
+    setPlayer(save.player);
+    setPartner(save.partner);
+    setItems(save.items);
+    setUnlockedNat(save.unlockedNat ?? [...NATSUMI_INITIAL_SKILLS]);
+    setUnlockedMas(save.unlockedMas ?? [...MASAYA_INITIAL_SKILLS]);
+    setEquipment(save.equipment ?? []);
+    const pg = save.dialoguePage ?? 0;
+    const br = save.dialogueBranch ?? null;
+    setDialoguePage(pg); setInitDlgPage(pg);
+    setDialogueBranch(br); setInitDlgBranch(br);
+    startFromIdx(save.scenarioIdx ?? 0);
+  }, [startFromIdx]);
+
+  const startNewGame = useCallback(() => {
+    setPlayer({ ...PLAYER_INITIAL }); setPartner({ ...PARTNER_INITIAL });
+    setItems(ITEMS_DATA.map(i => ({ ...i })));
+    setUnlockedNat([...NATSUMI_INITIAL_SKILLS]); setUnlockedMas([...MASAYA_INITIAL_SKILLS]);
+    setEquipment([]);
+    setDialoguePage(0); setInitDlgPage(0);
+    setDialogueBranch(null); setInitDlgBranch(null);
+    advanceScenario(-1); setScreen("battle");
+  }, [advanceScenario]);
+
+  const startContinue     = useCallback(() => { const s = loadGame(); if (s) applyLoad(s); }, [applyLoad]);
+  const startContinueFile = useCallback((save) => {
+    if (!save) return;
+    try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch {}
+    applyLoad(save);
+  }, [applyLoad]);
+
+  // ── 会話パートのコールバック ─────────────────────────────
+  const handleDialogueDone = useCallback(() => {
+    setDialoguePage(0); setInitDlgPage(0);
+    setDialogueBranch(null); setInitDlgBranch(null);
+    advanceScenario(scenarioIdx);
+  }, [scenarioIdx, advanceScenario]);
+
+  const handleDialogueGameOver = useCallback(() => setPhase("gameover"), []);
+  const handleRetryBoss = useCallback(() => {
+    for (let i = scenarioIdx; i >= 0; i--) {
+      if (SCENARIO[i].type === "battle" && ENEMIES_DATA[SCENARIO[i].enemyId]?.boss) { startFromIdx(i); return; }
+    }
+  }, [scenarioIdx, startFromIdx]);
+
+  const applyBondDelta        = useCallback(d => setPlayer(prev => ({ ...prev, bond: Math.min(100, Math.max(0, prev.bond + d)) })), []);
+  const applyStatDelta        = useCallback(d => setPlayer(prev => ({ ...prev, stats: { ...prev.stats, ...Object.fromEntries(Object.entries(d).map(([k,v]) => [k, (prev.stats[k]||0)+v])) } })), []);
+  const applyPartnerHpRestore = useCallback(a => setPartner(prev => ({ ...prev, hp: Math.min(prev.maxHp, prev.hp + a) })), []);
+
+  // ── アニメーション ───────────────────────────────────────
+  const hitAnimation = useCallback(() => new Promise(res => {
+    setShaking(true);
+    setTimeout(() => { setFlashing(true); setTimeout(() => { setShaking(false); setFlashing(false); res(); }, 110); }, 110);
+  }), []);
+
+  // ── 勝利処理 ─────────────────────────────────────────────
+  const handleVictory = useCallback((en) => {
+    const ev = SCENARIO[scenarioIdx];
+    let levelUpMsg = null;
+    let skillUnlockMsg = null;
+    if (ev?.levelUp) {
+      const { who, newLevel, skillUnlock } = ev.levelUp;
+      levelUpMsg = `${who}がLv.${newLevel}になった！`;
+      if (who === "Natsumi") setPlayer(prev => ({ ...prev, level: newLevel }));
+      if (who === "Masaya")  setPartner(prev => ({ ...prev, level: newLevel }));
+      if (skillUnlock) skillUnlockMsg = skillUnlock;
+    }
+    if (ev?.isFinal) { setPlayer(prev => ({ ...prev, level:21 })); levelUpMsg = "NatsumiがLv.21になった！ ─ ゲームクリア！"; }
+    setVictoryInfo({ enemy: en, expGained: en.exp, levelUpMsg, skillUnlockMsg });
+    setPhase("victory");
+  }, [scenarioIdx]);
+
+  // ── 全行動実行（素早さ順） ───────────────────────────────
+  const executeAllActions = useCallback(async (natAction, masAction) => {
+    setPhase("executing");
+    boostFlagRef.current = false;
+
+    let pl = { ...player };
+    let pt = { ...partner };
+    let en = { ...enemy };
+    let ended = false;
+
+    // 素早さ順ソート
+    const actors = [
+      { id:"natsumi", spd: pl.speed ?? 65 },
+      ...(!pt.ko ? [{ id:"masaya", spd: pt.speed ?? 80 }] : []),
+      { id:"enemy",   spd: en.speed ?? 50 },
+    ].sort((a, b) => b.spd - a.spd);
+
+    const masayCovering = masAction?.type === "skill" && masAction?.skill?.type === "cover";
+
+    for (const actor of actors) {
+      if (ended) break;
+      if (actor.id === "enemy" && en.hp <= 0) continue;
+      await wait(280);
+
+      // ── Natsumi ──
+      if (actor.id === "natsumi") {
+        const atkMult = boostFlagRef.current ? 1.5 : 1.0;
+        boostFlagRef.current = false;
+        const act = natAction;
+
+        if (act.type === "attack") {
+          const dmg = calcPhys(Math.floor(pl.attack * atkMult), en.defense);
+          addLog(`${atkMult > 1 ? "✨激励！" : ""}Natsumiの攻撃！ ${en.name}に${dmg}のダメージ！`, "damage");
+          en = { ...en, hp: Math.max(0, en.hp - dmg) };
+          setEnemy(prev => ({ ...prev, hp: en.hp })); await hitAnimation();
+          if (en.hp <= 0) { handleVictory({ ...en }); ended = true; break; }
+
+        } else if (act.type === "skill") {
+          const sk = act.skill;
+          if (pl.mp < sk.mpCost) {
+            addLog("MPが足りない！ 通常攻撃に切り替え！", "system");
+            const dmg = calcPhys(Math.floor(pl.attack * atkMult), en.defense);
+            addLog(`Natsumiの攻撃！ ${en.name}に${dmg}のダメージ！`, "damage");
+            en = { ...en, hp: Math.max(0, en.hp - dmg) };
+            setEnemy(prev => ({ ...prev, hp: en.hp })); await hitAnimation();
+            if (en.hp <= 0) { handleVictory({ ...en }); ended = true; break; }
+          } else {
+            pl = { ...pl, mp: pl.mp - sk.mpCost };
+            setPlayer(prev => ({ ...prev, mp: pl.mp }));
+            if (sk.type === "attack") {
+              let dmg = calcSkill(Math.floor(pl.attack * atkMult), sk.powerMultiplier, en.defense);
+              if (sk.partnered && !pt.ko) {
+                dmg += Math.floor(pt.attack * 0.8);
+                addLog(`NatsumiとMasayaの「${sk.name}」！`, "skill"); await wait(180);
+                addLog(`${en.name}に${dmg}の大ダメージ！！`, "skill");
+              } else {
+                addLog(`Natsumiは「${sk.name}」！ ${en.name}に${dmg}のダメージ！`, "skill");
+              }
+              en = { ...en, hp: Math.max(0, en.hp - dmg) };
+              setEnemy(prev => ({ ...prev, hp: en.hp })); await hitAnimation();
+              if (en.hp <= 0) { handleVictory({ ...en }); ended = true; break; }
+            } else if (sk.type === "heal") {
+              const tgt = act.target || "self";
+              if (tgt === "partner" && !pt.ko) {
+                const h = Math.min(pt.maxHp - pt.hp, sk.healAmount);
+                pt = { ...pt, hp: pt.hp + h }; setPartner(prev => ({ ...prev, hp: pt.hp }));
+                addLog(`Natsumiは「${sk.name}」！ MasayaのHPが${h}回復！`, "heal");
+              } else {
+                const h = Math.min(pl.maxHp - pl.hp, sk.healAmount);
+                pl = { ...pl, hp: pl.hp + h }; setPlayer(prev => ({ ...prev, hp: pl.hp }));
+                addLog(`Natsumiは「${sk.name}」！ 自分のHPが${h}回復！`, "heal");
+              }
+            } else if (sk.type === "heal_both") {
+              const hn = Math.min(pl.maxHp - pl.hp, sk.healAmount);
+              pl = { ...pl, hp: pl.hp + hn }; setPlayer(prev => ({ ...prev, hp: pl.hp }));
+              addLog(`Natsumiは「${sk.name}」！ NatsumiのHPが${hn}回復！`, "heal");
+              if (!pt.ko) {
+                const hm = Math.min(pt.maxHp - pt.hp, sk.healAmount);
+                pt = { ...pt, hp: pt.hp + hm }; setPartner(prev => ({ ...prev, hp: pt.hp }));
+                addLog(`MasayaのHPも${hm}回復！`, "heal");
+              }
+            }
+          }
+        } else if (act.type === "item") {
+          const it = act.item; const msgs = [];
+          if (it.healAmount > 0) { const h = Math.min(pl.maxHp - pl.hp, it.healAmount); pl = { ...pl, hp: pl.hp + h }; setPlayer(prev => ({ ...prev, hp: pl.hp })); msgs.push(`HPが${h}回復`); }
+          if (it.mpRestore  > 0) { const m = Math.min(pl.maxMp - pl.mp, it.mpRestore);  pl = { ...pl, mp: pl.mp + m }; setPlayer(prev => ({ ...prev, mp: pl.mp })); msgs.push(`MPが${m}回復`); }
+          addLog(`「${it.name}」を使った！ ${msgs.join("・")}！`, "heal");
+          setItems(prev => prev.map(i => i.id === it.id ? { ...i, count: i.count - 1 } : i));
+        }
+      }
+
+      // ── Masaya ──
+      else if (actor.id === "masaya") {
+        const act = masAction;
+        if (!act) continue;
+        if (act.type === "attack") {
+          const dmg = calcPhys(pt.attack, en.defense);
+          addLog(`Masayaの攻撃！ ${en.name}に${dmg}のダメージ！`, "damage");
+          en = { ...en, hp: Math.max(0, en.hp - dmg) };
+          setEnemy(prev => ({ ...prev, hp: en.hp })); await hitAnimation();
+          if (en.hp <= 0) { handleVictory({ ...en }); ended = true; break; }
+        } else if (act.type === "skill") {
+          const sk = act.skill;
+          if (pt.mp < sk.mpCost) {
+            addLog("MasayaのMPが足りない！ 通常攻撃に切り替え！", "system");
+            const dmg = calcPhys(pt.attack, en.defense);
+            addLog(`Masayaの攻撃！ ${en.name}に${dmg}のダメージ！`, "damage");
+            en = { ...en, hp: Math.max(0, en.hp - dmg) };
+            setEnemy(prev => ({ ...prev, hp: en.hp })); await hitAnimation();
+            if (en.hp <= 0) { handleVictory({ ...en }); ended = true; break; }
+          } else {
+            pt = { ...pt, mp: pt.mp - sk.mpCost }; setPartner(prev => ({ ...prev, mp: pt.mp }));
+            if (sk.type === "cover") {
+              addLog(`Masayaは「${sk.name}」！ Natsumiを守る構えを取った！`, "skill");
+            } else if (sk.type === "attack") {
+              const dmg = calcSkill(pt.attack, sk.powerMultiplier, en.defense);
+              addLog(`Masayaの「${sk.name}」！ ${en.name}に${dmg}のダメージ！`, "skill");
+              en = { ...en, hp: Math.max(0, en.hp - dmg) };
+              setEnemy(prev => ({ ...prev, hp: en.hp })); await hitAnimation();
+              if (en.hp <= 0) { handleVictory({ ...en }); ended = true; break; }
+            } else if (sk.type === "boost") {
+              addLog(`Masayaは「${sk.name}」！ Natsumiの攻撃力が上がった！`, "skill");
+              boostFlagRef.current = true;
+            } else if (sk.type === "break") {
+              const dmg = Math.max(1, Math.floor(pt.attack * sk.powerMultiplier) + rand(-8, 8));
+              addLog(`Masayaの「${sk.name}」！ 防御を無視して${en.name}に${dmg}のダメージ！`, "skill");
+              en = { ...en, hp: Math.max(0, en.hp - dmg) };
+              setEnemy(prev => ({ ...prev, hp: en.hp })); await hitAnimation();
+              if (en.hp <= 0) { handleVictory({ ...en }); ended = true; break; }
+            }
+          }
+        }
+      }
+
+      // ── 敵 ──
+      else if (actor.id === "enemy") {
+        await wait(420);
+        let targetNatsumi = true;
+        if (!pt.ko) {
+          if (masayCovering) {
+            targetNatsumi = false;
+            addLog(`Masayaが${en.name}の攻撃に割り込んだ！`, "system");
+          } else {
+            targetNatsumi = Math.random() < 0.65;
+          }
+        }
+        if (targetNatsumi) {
+          const dmg = calcPhys(en.attack, pl.defense);
+          addLog(`${en.name}の攻撃！ Natsumiに${dmg}のダメージ！`, "damage");
+          pl = { ...pl, hp: Math.max(0, pl.hp - dmg) }; setPlayer(prev => ({ ...prev, hp: pl.hp }));
+          if (pl.hp <= 0) { await wait(380); addLog("Natsumiは倒れてしまった…", "system"); setPhase("gameover"); ended = true; }
+        } else {
+          const dmg = calcPhys(en.attack, pt.defense ?? 30);
+          addLog(`${en.name}の攻撃！ Masayaに${dmg}のダメージ！`, "damage");
+          const newHp = Math.max(0, pt.hp - dmg);
+          const newKo = newHp <= 0;
+          pt = { ...pt, hp: newHp, ko: newKo }; setPartner(prev => ({ ...prev, hp: pt.hp, ko: pt.ko }));
+          if (newKo) { await wait(280); addLog("Masayaが倒れた！ でもNatsumiは戦い続ける！", "system"); }
+        }
+      }
+    }
+
+    if (!ended) setPhase("select_natsumi");
+  }, [player, partner, enemy, addLog, hitAnimation, handleVictory]);
+
+  // ── コマンド選択ハンドラ ─────────────────────────────────
+  const gotoMasaya = useCallback((natAction) => {
+    pendingNatRef.current = natAction;
+    if (partner.ko) { executeAllActions(natAction, null); }
+    else             { setPhase("select_masaya"); }
+  }, [partner.ko, executeAllActions]);
+
+  const handleNatFight       = useCallback(() => gotoMasaya({ type:"attack" }),          [gotoMasaya]);
+  const handleNatSkillSelect = useCallback(sk => {
+    if (sk.type === "heal") { pendingHugRef.current = sk; setPhase("select_hug_target"); }
+    else gotoMasaya({ type:"skill", skill: sk });
+  }, [gotoMasaya]);
+  const handleHugTarget      = useCallback(tgt => gotoMasaya({ type:"skill", skill: pendingHugRef.current, target: tgt }), [gotoMasaya]);
+  const handleNatItemSelect  = useCallback(it => gotoMasaya({ type:"item",  item:  it }), [gotoMasaya]);
+  const handleMasFight       = useCallback(() => executeAllActions(pendingNatRef.current, { type:"attack" }), [executeAllActions]);
+  const handleMasSkillSelect = useCallback(sk => executeAllActions(pendingNatRef.current, { type:"skill", skill: sk }), [executeAllActions]);
+
+  // ── 勝利後「つぎへ」 ─────────────────────────────────────
+  const handleVictoryNext = useCallback(() => {
+    // 戦闘後のひと息：HP/MPを少し回復し、Masayaは復帰（使いすぎは取り返せないが詰みは防ぐ）
+    setPlayer(prev => ({
+      ...prev,
+      exp: prev.exp + (victoryInfo?.enemy?.exp ?? 0),
+      hp:  Math.min(prev.maxHp, prev.hp + Math.floor(prev.maxHp * 0.25)),
+      mp:  Math.min(prev.maxMp, prev.mp + 25),
+    }));
+    setPartner(prev => ({
+      ...prev,
+      ko: false,
+      hp:  prev.ko ? Math.floor(prev.maxHp * 0.4) : Math.min(prev.maxHp, prev.hp + Math.floor(prev.maxHp * 0.25)),
+      mp:  Math.min(prev.maxMp, prev.mp + 15),
+    }));
+    if (victoryInfo?.skillUnlockMsg) {
+      const { who, skillId } = victoryInfo.skillUnlockMsg;
+      if (who === "natsumi") setUnlockedNat(prev => prev.includes(skillId) ? prev : [...prev, skillId]);
+      if (who === "masaya")  setUnlockedMas(prev => prev.includes(skillId) ? prev : [...prev, skillId]);
+    }
+    if (SCENARIO[scenarioIdx]?.isFinal) { setScreen("ending"); return; }
+    advanceScenario(scenarioIdx); setVictoryInfo(null); setPhase("select_natsumi");
+  }, [victoryInfo, scenarioIdx, advanceScenario]);
+
+  const handleRetry = useCallback(() => {
+    setPlayer({ ...PLAYER_INITIAL }); setPartner({ ...PARTNER_INITIAL });
+    setItems(ITEMS_DATA.map(i => ({ ...i })));
+    setUnlockedNat([...NATSUMI_INITIAL_SKILLS]); setUnlockedMas([...MASAYA_INITIAL_SKILLS]);
+    setEquipment([]);
+    advanceScenario(-1);
+  }, [advanceScenario]);
+
+  // ── レンダリング ─────────────────────────────────────────
+  const font = "'Hiragino Kaku Gothic ProN','Noto Sans JP','Yu Gothic',sans-serif";
+  const isExec = phase === "executing";
+  const natSkills = SKILLS_DATA.filter(sk => unlockedNat.includes(sk.id));
+  const masSkills = MASAYA_SKILLS_DATA.filter(sk => unlockedMas.includes(sk.id));
+
+  // どの画面でも前面に出すオーバーレイ（タイトル確認・装備）
+  const titleModal = showTitleConfirm && <TitleConfirmModal onConfirm={confirmGoTitle} onCancel={() => setShowTitleConfirm(false)} />;
+  const equipModal = showEquip && <EquipScreen equipment={equipment} player={player} partner={partner} onToggle={toggleEquip} onClose={() => setShowEquip(false)} />;
+  const wrap = (content) => (
+    <div style={{ height:"100%", display:"flex", flexDirection:"column", fontFamily:font, userSelect:"none", background:"#05050f", position:"relative" }}>
+      {content}
+      {equipModal}
+      {titleModal}
+    </div>
+  );
+
+  if (screen === "title") return wrap(
+    <TitleScreen onNewGame={startNewGame} onContinue={startContinue} onContinueFile={startContinueFile} />
+  );
+  if (screen === "ending") return wrap(
+    <EndingScreen player={player} partner={partner} onTitle={goTitle} />
+  );
+  if (currentEvent?.type === "skill_unlock") return wrap(
+    <SkillUnlockScreen event={currentEvent} onDone={() => {
+      if (currentEvent.who === "natsumi") setUnlockedNat(prev => prev.includes(currentEvent.skillId) ? prev : [...prev, currentEvent.skillId]);
+      if (currentEvent.who === "masaya")  setUnlockedMas(prev => prev.includes(currentEvent.skillId) ? prev : [...prev, currentEvent.skillId]);
+      advanceScenario(scenarioIdx);
+    }} />
+  );
+  if (currentEvent?.type === "dialogue") return wrap(
+    <React.Fragment>
+      <SaveToast show={showToast} />
+      <div style={{ padding:"5px 10px", background:"linear-gradient(135deg,#111827,#0f172a)", borderBottom:"1px solid #1e293b", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
+        <button onClick={goTitle} style={{ background:"none", border:"none", color:"#fbbf24", fontSize:13, fontWeight:"bold", cursor:"pointer", padding:0 }}>🎮 Natumi no Bouken</button>
+        <button onClick={handleSave} style={{ background:"#1e293b", border:"1px solid #334155", borderRadius:6, color:"#94a3b8", fontSize:10, padding:"3px 8px", cursor:"pointer" }}>💾</button>
+      </div>
+      <DialogueScreen
+        key={scenarioIdx}
+        event={currentEvent} player={player}
+        onDone={handleDialogueDone} onGameOver={handleDialogueGameOver} onRetryBoss={handleRetryBoss}
+        applyBondDelta={applyBondDelta} applyStatDelta={applyStatDelta} applyPartnerHpRestore={applyPartnerHpRestore}
+        initialPageIdx={initDlgPage} initialBranchId={initDlgBranch}
+        onStateChange={(pg, br) => { setDialoguePage(pg); setDialogueBranch(br); }}
+      />
+    </React.Fragment>
+  );
+  if (currentEvent?.type === "item") return wrap(
+    <React.Fragment>
+      <div style={{ padding:"5px 10px", background:"linear-gradient(135deg,#111827,#0f172a)", borderBottom:"1px solid #1e293b", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
+        <button onClick={goTitle} style={{ background:"none", border:"none", color:"#fbbf24", fontSize:13, fontWeight:"bold", cursor:"pointer", padding:0 }}>🎮 Natumi no Bouken</button>
+      </div>
+      <ItemEventScreen event={currentEvent} onDone={() => handleItemEventDone(currentEvent)} />
+    </React.Fragment>
+  );
+  if (phase === "victory" && victoryInfo) return wrap(
+    <VictoryScreen enemy={victoryInfo.enemy} expGained={victoryInfo.expGained} levelUpMsg={victoryInfo.levelUpMsg} skillUnlockMsg={victoryInfo.skillUnlockMsg} onNext={handleVictoryNext} />
+  );
+  if (phase === "gameover") return wrap(
+    <GameOverScreen onRetry={handleRetry} onTitle={goTitle} />
+  );
+
+  // バトル画面
+  const bottomMenu =
+    phase === "select_natsumi_skill" ? <NatsumiSkillMenu skills={natSkills} player={player} onSelect={handleNatSkillSelect} onBack={() => setPhase("select_natsumi")} /> :
+    phase === "select_hug_target"    ? <HugTargetButtons player={player} partner={partner} onSelect={handleHugTarget} onBack={() => setPhase("select_natsumi_skill")} /> :
+    phase === "select_natsumi_item"  ? <ItemMenu items={items} onSelect={handleNatItemSelect} onBack={() => setPhase("select_natsumi")} /> :
+    phase === "select_masaya"        ? <MasayaCommandButtons partner={partner} onFight={handleMasFight} onSkill={() => setPhase("select_masaya_skill")} disabled={isExec} /> :
+    phase === "select_masaya_skill"  ? <MasayaSkillMenu skills={masSkills} partner={partner} onSelect={handleMasSkillSelect} onBack={() => setPhase("select_masaya")} /> :
+    <NatsumiCommandButtons onFight={handleNatFight} onSkill={() => setPhase("select_natsumi_skill")} onItem={() => setPhase("select_natsumi_item")} onSave={handleSave} onEquip={() => setShowEquip(true)} onTitle={goTitle} disabled={isExec} />;
+
+  return wrap(
+    <React.Fragment>
+      <SaveToast show={showToast} />
+      <div style={{ padding:"4px 10px", background:"linear-gradient(135deg,#111827,#0f172a)", borderBottom:"1px solid #1e293b", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
+        <button onClick={goTitle} style={{ background:"none", border:"none", color:"#fbbf24", fontSize:13, fontWeight:"bold", cursor:"pointer", padding:0 }}>🎮 Natumi no Bouken</button>
+        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+          <TurnOrderBadge player={player} partner={partner} enemy={enemy} />
+          <span style={{ color:"#475569", fontSize:9 }}>{enemy?.boss ? "⚠️ BOSS" : `第${enemy?.chapter ?? "?"}章`}</span>
+          <button onClick={() => { setDebugMode(p => !p); if (!debugMode && enemy) setEnemy(e => ({ ...e, hp:1 })); }} style={{ padding:"2px 6px", background: debugMode ? "#7f1d1d" : "#1e293b", border:`1px solid ${debugMode ? "#ef4444" : "#334155"}`, borderRadius:5, color: debugMode ? "#fca5a5" : "#475569", fontSize:9, fontWeight:"bold", cursor:"pointer" }}>
+            {debugMode ? "🐛 ON" : "DBG"}
+          </button>
+        </div>
+      </div>
+      <div style={{ flex:"0 0 42%", display:"flex", flexDirection:"column", overflow:"hidden", borderBottom:"2px solid #1e293b",
+        backgroundColor:"#0c1220",
+        backgroundImage: enemy && ENEMY_BG[enemy.id]
+          ? `linear-gradient(180deg,rgba(5,5,15,.35),rgba(5,5,15,.55) 55%,rgba(5,5,15,.9)), url(${ENEMY_BG[enemy.id]})`
+          : "linear-gradient(180deg,#0c1220,#05050f)",
+        backgroundSize:"cover", backgroundPosition:"center" }}>
+        {enemy && <EnemyArea    enemy={enemy} />}
+        {enemy && <EnemyGraphic enemy={enemy} shaking={shaking} flashing={flashing} />}
+        <PartyPortraits partner={partner} />
+        <PlayerStatus player={player} partner={partner} />
+      </div>
+      <div style={{ flex:"1 1 0", display:"flex", flexDirection:"column", overflow:"hidden", minHeight:0 }}>
+        <BattleLog logs={logs} logRef={logRef} />
+        {bottomMenu}
+      </div>
+    </React.Fragment>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
