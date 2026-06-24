@@ -77,6 +77,138 @@ function Avatar({ who, size = 24, radius, border, glow, gray, style }) {
 }
 
 // ================================================================
+// § music  ─  BGMエンジン（Web Audio APIで生成・ライセンスフリー）
+//   外部音源ファイルに頼らず、シーン別に複数のチップチューンを再生する。
+//   ・title    タイトル（希望に満ちた明るい曲）
+//   ・peaceful 会話／アイテム（穏やかなメロディ）
+//   ・battle   通常バトル（疾走感のある戦闘曲）
+//   ・boss     ボス戦（緊迫したダーク曲）
+//   ・victory  勝利・スキル習得（明るいファンファーレ）
+//   ・ending   エンディング（あたたかいバラード）
+//   ・gameover ゲームオーバー（もの悲しい曲）
+// ================================================================
+const MusicEngine = (() => {
+  let ctx = null, master = null, sfxGain = null, muted = false;
+  let curName = null, track = null, step = 0, nextTime = 0, timer = null;
+
+  // 音名→周波数テーブル（A4=440Hz基準）
+  const NOTE = {};
+  const NM = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  for (let o = 1; o <= 6; o++) for (let i = 0; i < 12; i++) {
+    const midi = 12 * (o + 1) + i;
+    NOTE[NM[i] + o] = 440 * Math.pow(2, (midi - 69) / 12);
+  }
+
+  // 各トラック：tempo(BPM)、lead(主旋律)、bass(伴奏)。各ステップ＝8分音符、nullは休符。
+  const TRACKS = {
+    title: { tempo:112, leadType:"square", bassType:"triangle",
+      lead:["E4","G4","C5","G4","A4","G4","E4",null,"D4","E4","G4","E4","C4",null,null,null],
+      bass:["C3",null,"G2",null,"A2",null,"E2",null,"F2",null,"G2",null,"C3",null,"G2",null] },
+    peaceful: { tempo:84, leadType:"triangle", bassType:"sine",
+      lead:["G4",null,"E4",null,"C4",null,"E4",null,"D4",null,"E4",null,"G4",null,null,null],
+      bass:["C3",null,null,null,"A2",null,null,null,"F2",null,null,null,"G2",null,null,null] },
+    battle: { tempo:152, leadType:"square", bassType:"triangle",
+      lead:["A4","C5","E5","C5","A4","E5","D5","C5","B4","D5","F5","D5","E5",null,"E5",null],
+      bass:["A2",null,"A2",null,"F2",null,"F2",null,"G2",null,"G2",null,"E2",null,"E2",null] },
+    boss: { tempo:160, leadType:"sawtooth", bassType:"square",
+      lead:["E4","E4","G4","E4","D4","E4","C4",null,"B3","C4","D4","E4","B3",null,null,null],
+      bass:["E2",null,"E2","E2","C2",null,"C2","C2","D2",null,"D2","D2","B1",null,"B1",null] },
+    victory: { tempo:140, leadType:"square", bassType:"triangle",
+      lead:["C5","E5","G5","C6","G5","C6",null,null,"C5","E5","G5","C6",null,null,null,null],
+      bass:["C3",null,"G2",null,"C3",null,"C3",null,"C3",null,"G2",null,"C3",null,null,null] },
+    ending: { tempo:76, leadType:"triangle", bassType:"sine",
+      lead:["A4",null,"G4",null,"F4",null,"G4",null,"A4",null,"C5",null,"A4",null,null,null],
+      bass:["F2",null,null,null,"C3",null,null,null,"D3",null,null,null,"G2",null,"C3",null] },
+    gameover: { tempo:70, leadType:"triangle", bassType:"sine",
+      lead:["A4",null,null,null,"G4",null,null,null,"F4",null,null,null,"E4",null,null,null],
+      bass:["A2",null,null,null,"F2",null,null,null,"D2",null,null,null,"E2",null,null,null] },
+  };
+
+  function ensure() {
+    if (ctx) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    ctx = new AC();
+    master = ctx.createGain();
+    master.gain.value = muted ? 0 : 0.16;
+    master.connect(ctx.destination);
+    sfxGain = ctx.createGain();
+    sfxGain.gain.value = muted ? 0 : 0.24;
+    sfxGain.connect(ctx.destination);
+  }
+  function tone(freq, start, dur, type, vol) {
+    if (!freq) return;
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.value = freq;
+    o.connect(g); g.connect(master);
+    g.gain.setValueAtTime(0.0001, start);
+    g.gain.linearRampToValueAtTime(vol, start + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+    o.start(start); o.stop(start + dur + 0.05);
+  }
+  function scheduler() {
+    if (!ctx || !track) return;
+    const spb = 60 / track.tempo / 2; // 8分音符の長さ
+    while (nextTime < ctx.currentTime + 0.14) {
+      const lead = track.lead[step % track.lead.length];
+      const bass = track.bass ? track.bass[step % track.bass.length] : null;
+      tone(NOTE[lead], nextTime, spb * 0.9,  track.leadType || "square",   0.45);
+      tone(NOTE[bass], nextTime, spb * 0.95, track.bassType || "triangle", 0.55);
+      nextTime += spb; step++;
+    }
+  }
+  function play(name) {
+    if (name === curName) return;
+    ensure();
+    if (!ctx) return;
+    curName = name;
+    track = TRACKS[name] || null;
+    if (!track) { stop(); return; }
+    step = 0; nextTime = ctx.currentTime + 0.06;
+    if (timer) clearInterval(timer);
+    timer = setInterval(scheduler, 40);
+    if (ctx.state === "suspended") ctx.resume();
+  }
+  function stop() { if (timer) { clearInterval(timer); timer = null; } track = null; curName = null; }
+  function setMuted(m) { muted = m; if (master) master.gain.value = m ? 0 : 0.16; if (sfxGain) sfxGain.gain.value = m ? 0 : 0.24; }
+  function unlock() { ensure(); if (ctx && ctx.state === "suspended") ctx.resume(); }
+
+  // ── SE（効果音）── BGMと同じくWeb Audioで生成 ─────────────
+  function beep(freq, start, dur, type, vol) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.value = freq;
+    o.connect(g); g.connect(sfxGain);
+    g.gain.setValueAtTime(0.0001, start);
+    g.gain.linearRampToValueAtTime(vol, start + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+    o.start(start); o.stop(start + dur + 0.03);
+  }
+  function noise(start, dur, vol) {
+    const len = Math.floor(ctx.sampleRate * dur);
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const s = ctx.createBufferSource(); s.buffer = buf;
+    const g = ctx.createGain(); g.gain.value = vol;
+    s.connect(g); g.connect(sfxGain); s.start(start);
+  }
+  const SFX = {
+    confirm: t => { beep(740, t, 0.06, "square", 0.30); beep(1110, t + 0.05, 0.08, "square", 0.28); },
+    hit:     t => { noise(t, 0.13, 0.35); beep(150, t, 0.12, "sawtooth", 0.32); },
+    skill:   t => { [880, 1175, 1568].forEach((f, i) => beep(f, t + i * 0.05, 0.09, "square", 0.26)); },
+    heal:    t => { [784, 1047, 1319].forEach((f, i) => beep(f, t + i * 0.08, 0.14, "sine", 0.30)); },
+    damage:  t => { noise(t, 0.10, 0.28); beep(330, t, 0.10, "sawtooth", 0.30); beep(220, t + 0.07, 0.16, "sawtooth", 0.28); },
+  };
+  function sfx(name) {
+    ensure(); if (!ctx) return;
+    const fn = SFX[name]; if (!fn) return;
+    if (ctx.state === "suspended") ctx.resume();
+    fn(ctx.currentTime + 0.01);
+  }
+  return { play, setMuted, unlock, sfx };
+})();
+
+// ================================================================
 // § gameData  ─  キャラクター・スキル・アイテム・敵・シナリオ
 // ================================================================
 
@@ -1031,6 +1163,7 @@ function App() {
   const [equipment,      setEquipment]      = useState([]);
   const [showTitleConfirm, setShowTitleConfirm] = useState(false);
   const [showEquip,      setShowEquip]      = useState(false);
+  const [musicMuted,     setMusicMuted]     = useState(() => { try { return localStorage.getItem("natsumiBGM_muted") === "1"; } catch { return false; } });
 
   const pendingNatRef = useRef(null); // Natsumiの保留アクション
   const boostFlagRef  = useRef(false); // 激励バフフラグ
@@ -1040,6 +1173,28 @@ function App() {
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [logs]);
   const addLog = useCallback((text, type="normal") => setLogs(prev => [...prev, { text, type }]), []);
   const currentEvent = SCENARIO[scenarioIdx] || null;
+
+  // ── BGM ──────────────────────────────────────────────────
+  // 最初のユーザー操作で音声を有効化（ブラウザの自動再生制限対策）
+  useEffect(() => {
+    MusicEngine.setMuted(musicMuted);
+    const unlock = () => MusicEngine.unlock();
+    window.addEventListener("pointerdown", unlock);
+    return () => window.removeEventListener("pointerdown", unlock);
+  }, []);
+  // シーンに応じてBGMを切り替える
+  useEffect(() => {
+    let track = "title";
+    if      (screen === "title")                   track = "title";
+    else if (screen === "ending")                  track = "ending";
+    else if (phase  === "gameover")                track = "gameover";
+    else if (phase  === "victory")                 track = "victory";
+    else if (currentEvent?.type === "skill_unlock")track = "victory";
+    else if (currentEvent?.type === "dialogue")    track = "peaceful";
+    else if (currentEvent?.type === "item")        track = "peaceful";
+    else if (currentEvent?.type === "battle")      track = enemy?.boss ? "boss" : "battle";
+    MusicEngine.play(track);
+  }, [screen, phase, currentEvent, enemy]);
 
   // ── セーブ / タイトル ────────────────────────────────────
   const handleSave = useCallback(() => {
@@ -1166,6 +1321,7 @@ function App() {
 
   // ── アニメーション ───────────────────────────────────────
   const hitAnimation = useCallback(() => new Promise(res => {
+    MusicEngine.sfx("hit");
     setShaking(true);
     setTimeout(() => { setFlashing(true); setTimeout(() => { setShaking(false); setFlashing(false); res(); }, 110); }, 110);
   }), []);
@@ -1249,6 +1405,7 @@ function App() {
               setEnemy(prev => ({ ...prev, hp: en.hp })); await hitAnimation();
               if (en.hp <= 0) { handleVictory({ ...en }); ended = true; break; }
             } else if (sk.type === "heal") {
+              MusicEngine.sfx("heal");
               const tgt = act.target || "self";
               if (tgt === "partner" && !pt.ko) {
                 const h = Math.min(pt.maxHp - pt.hp, sk.healAmount);
@@ -1260,6 +1417,7 @@ function App() {
                 addLog(`Natsumiは「${sk.name}」！ 自分のHPが${h}回復！`, "heal");
               }
             } else if (sk.type === "heal_both") {
+              MusicEngine.sfx("heal");
               const hn = Math.min(pl.maxHp - pl.hp, sk.healAmount);
               pl = { ...pl, hp: pl.hp + hn }; setPlayer(prev => ({ ...prev, hp: pl.hp }));
               addLog(`Natsumiは「${sk.name}」！ NatsumiのHPが${hn}回復！`, "heal");
@@ -1271,6 +1429,7 @@ function App() {
             }
           }
         } else if (act.type === "item") {
+          MusicEngine.sfx("heal");
           const it = act.item; const msgs = [];
           if (it.healAmount > 0) { const h = Math.min(pl.maxHp - pl.hp, it.healAmount); pl = { ...pl, hp: pl.hp + h }; setPlayer(prev => ({ ...prev, hp: pl.hp })); msgs.push(`HPが${h}回復`); }
           if (it.mpRestore  > 0) { const m = Math.min(pl.maxMp - pl.mp, it.mpRestore);  pl = { ...pl, mp: pl.mp + m }; setPlayer(prev => ({ ...prev, mp: pl.mp })); msgs.push(`MPが${m}回復`); }
@@ -1301,6 +1460,7 @@ function App() {
           } else {
             pt = { ...pt, mp: pt.mp - sk.mpCost }; setPartner(prev => ({ ...prev, mp: pt.mp }));
             if (sk.type === "cover") {
+              MusicEngine.sfx("skill");
               addLog(`Masayaは「${sk.name}」！ Natsumiを守る構えを取った！`, "skill");
             } else if (sk.type === "attack") {
               const dmg = calcSkill(pt.attack, sk.powerMultiplier, en.defense);
@@ -1309,6 +1469,7 @@ function App() {
               setEnemy(prev => ({ ...prev, hp: en.hp })); await hitAnimation();
               if (en.hp <= 0) { handleVictory({ ...en }); ended = true; break; }
             } else if (sk.type === "boost") {
+              MusicEngine.sfx("skill");
               addLog(`Masayaは「${sk.name}」！ Natsumiの攻撃力が上がった！`, "skill");
               boostFlagRef.current = true;
             } else if (sk.type === "break") {
@@ -1335,11 +1496,13 @@ function App() {
           }
         }
         if (targetNatsumi) {
+          MusicEngine.sfx("damage");
           const dmg = calcPhys(en.attack, pl.defense);
           addLog(`${en.name}の攻撃！ Natsumiに${dmg}のダメージ！`, "damage");
           pl = { ...pl, hp: Math.max(0, pl.hp - dmg) }; setPlayer(prev => ({ ...prev, hp: pl.hp }));
           if (pl.hp <= 0) { await wait(380); addLog("Natsumiは倒れてしまった…", "system"); setPhase("gameover"); ended = true; }
         } else {
+          MusicEngine.sfx("damage");
           const dmg = calcPhys(en.attack, pt.defense ?? 30);
           addLog(`${en.name}の攻撃！ Masayaに${dmg}のダメージ！`, "damage");
           const newHp = Math.max(0, pt.hp - dmg);
@@ -1355,6 +1518,7 @@ function App() {
 
   // ── コマンド選択ハンドラ ─────────────────────────────────
   const gotoMasaya = useCallback((natAction) => {
+    MusicEngine.sfx("confirm");
     pendingNatRef.current = natAction;
     if (partner.ko) { executeAllActions(natAction, null); }
     else             { setPhase("select_masaya"); }
@@ -1411,9 +1575,34 @@ function App() {
   // どの画面でも前面に出すオーバーレイ（タイトル確認・装備）
   const titleModal = showTitleConfirm && <TitleConfirmModal onConfirm={confirmGoTitle} onCancel={() => setShowTitleConfirm(false)} />;
   const equipModal = showEquip && <EquipScreen equipment={equipment} player={player} partner={partner} onToggle={toggleEquip} onClose={() => setShowEquip(false)} />;
-  const wrap = (content) => (
+  const toggleMusic = () => {
+    const m = !musicMuted;
+    setMusicMuted(m);
+    MusicEngine.setMuted(m);
+    try { localStorage.setItem("natsumiBGM_muted", m ? "1" : "0"); } catch {}
+  };
+  // 上部バーに埋め込むミュート切替ボタン
+  const musicToggleStyle = {
+    width:26, height:26, borderRadius:7, flexShrink:0,
+    background:"#1e293b", border:`1px solid ${musicMuted ? "#475569" : "#fbbf24"}`,
+    color: musicMuted ? "#64748b" : "#fbbf24", fontSize:13, cursor:"pointer",
+    display:"flex", alignItems:"center", justifyContent:"center", padding:0,
+  };
+  const MusicToggle = () => (
+    <button onClick={toggleMusic} title="BGM ON/OFF" style={musicToggleStyle}>{musicMuted ? "🔇" : "🎵"}</button>
+  );
+  // バーの無い画面（タイトル等）用のフローティングボタン
+  const musicBtnFloating = (
+    <button onClick={toggleMusic} title="BGM ON/OFF" style={{
+      ...musicToggleStyle,
+      position:"absolute", top:8, right:8, zIndex:400,
+      width:30, height:30, fontSize:14, background:"rgba(15,23,42,.82)", boxShadow:"0 2px 8px rgba(0,0,0,.4)",
+    }}>{musicMuted ? "🔇" : "🎵"}</button>
+  );
+  const wrap = (content, hasBar) => (
     <div style={{ height:"100%", display:"flex", flexDirection:"column", fontFamily:font, userSelect:"none", background:"#05050f", position:"relative" }}>
       {content}
+      {!hasBar && musicBtnFloating}
       {equipModal}
       {titleModal}
     </div>
@@ -1437,7 +1626,10 @@ function App() {
       <SaveToast show={showToast} />
       <div style={{ padding:"5px 10px", background:"linear-gradient(135deg,#111827,#0f172a)", borderBottom:"1px solid #1e293b", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
         <button onClick={goTitle} style={{ background:"none", border:"none", color:"#fbbf24", fontSize:13, fontWeight:"bold", cursor:"pointer", padding:0 }}>🎮 Natumi no Bouken</button>
-        <button onClick={handleSave} style={{ background:"#1e293b", border:"1px solid #334155", borderRadius:6, color:"#94a3b8", fontSize:10, padding:"3px 8px", cursor:"pointer" }}>💾</button>
+        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+          <MusicToggle />
+          <button onClick={handleSave} style={{ background:"#1e293b", border:"1px solid #334155", borderRadius:6, color:"#94a3b8", fontSize:10, padding:"3px 8px", cursor:"pointer" }}>💾</button>
+        </div>
       </div>
       <DialogueScreen
         key={scenarioIdx}
@@ -1447,15 +1639,18 @@ function App() {
         initialPageIdx={initDlgPage} initialBranchId={initDlgBranch}
         onStateChange={(pg, br) => { setDialoguePage(pg); setDialogueBranch(br); }}
       />
-    </React.Fragment>
+    </React.Fragment>,
+    true
   );
   if (currentEvent?.type === "item") return wrap(
     <React.Fragment>
       <div style={{ padding:"5px 10px", background:"linear-gradient(135deg,#111827,#0f172a)", borderBottom:"1px solid #1e293b", display:"flex", justifyContent:"space-between", alignItems:"center", flexShrink:0 }}>
         <button onClick={goTitle} style={{ background:"none", border:"none", color:"#fbbf24", fontSize:13, fontWeight:"bold", cursor:"pointer", padding:0 }}>🎮 Natumi no Bouken</button>
+        <MusicToggle />
       </div>
       <ItemEventScreen event={currentEvent} onDone={() => handleItemEventDone(currentEvent)} />
-    </React.Fragment>
+    </React.Fragment>,
+    true
   );
   if (phase === "victory" && victoryInfo) return wrap(
     <VictoryScreen enemy={victoryInfo.enemy} expGained={victoryInfo.expGained} levelUpMsg={victoryInfo.levelUpMsg} skillUnlockMsg={victoryInfo.skillUnlockMsg} onNext={handleVictoryNext} />
@@ -1484,6 +1679,7 @@ function App() {
           <button onClick={() => { setDebugMode(p => !p); if (!debugMode && enemy) setEnemy(e => ({ ...e, hp:1 })); }} style={{ padding:"2px 6px", background: debugMode ? "#7f1d1d" : "#1e293b", border:`1px solid ${debugMode ? "#ef4444" : "#334155"}`, borderRadius:5, color: debugMode ? "#fca5a5" : "#475569", fontSize:9, fontWeight:"bold", cursor:"pointer" }}>
             {debugMode ? "🐛 ON" : "DBG"}
           </button>
+          <MusicToggle />
         </div>
       </div>
       <div style={{ flex:"0 0 42%", display:"flex", flexDirection:"column", overflow:"hidden", borderBottom:"2px solid #1e293b",
@@ -1501,7 +1697,8 @@ function App() {
         <BattleLog logs={logs} logRef={logRef} />
         {bottomMenu}
       </div>
-    </React.Fragment>
+    </React.Fragment>,
+    true
   );
 }
 
